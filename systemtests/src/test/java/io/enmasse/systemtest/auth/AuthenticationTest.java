@@ -45,7 +45,7 @@ public class AuthenticationTest extends TestBase {
             Destination.topic("auth-topic"),
             Destination.anycast("auth-anycast"),
             Destination.multicast("auth-multicast"));
-    private static final String mqttAddress = "t1";
+    private static final String mqttAddress = "auth-mqtt";
     private static final String anonymousUser = "anonymous";
     private static final String anonymousPswd = "anonymous";
 
@@ -68,21 +68,14 @@ public class AuthenticationTest extends TestBase {
         return false;
     }
 
-    public AddressSpace createAddressSpace(String name, String authService) throws Exception {
-        AddressSpace addressSpace = new AddressSpace(name);
-        addressSpaces.add(addressSpace);
-        super.createAddressSpace(addressSpace, authService);
-        setAddresses(addressSpace, amqpAddressList.toArray(new Destination[amqpAddressList.size()]));
-        //        setAddresses(name, Destination.queue(amqpAddress)); //, Destination.topic(mqttAddress));
-        return addressSpace;
-    }
-
     public AddressSpace createAddressSpace(String name, String authService, String type) throws Exception {
         AddressSpace addressSpace = new AddressSpace(name);
         addressSpaces.add(addressSpace);
         super.createAddressSpace(addressSpace, authService, type);
         if (type.equals(STANDARD_ADDRESS_SPACE_TYPE)) {
-            setAddresses(addressSpace, amqpAddressList.toArray(new Destination[amqpAddressList.size()]));
+            List<Destination> addressList = new ArrayList<>(amqpAddressList);
+            addressList.add(Destination.topic(mqttAddress));
+            setAddresses(addressSpace, addressList.toArray(new Destination[addressList.size()]));
         } else {
             List<Destination> brokeredAddressList = amqpAddressList.subList(0, 2);
             setAddresses(addressSpace, brokeredAddressList.toArray(new Destination[brokeredAddressList.size()]));
@@ -165,8 +158,7 @@ public class AuthenticationTest extends TestBase {
 
     private void assertCanConnect(AddressSpace addressSpace, String username, String password) throws Exception {
         assertTrue(canConnectWithAmqp(addressSpace, username, password));
-        // TODO: Enable this when mqtt is stable enough
-        // assertTrue(canConnectWithMqtt(addressSpace, username, password));
+        assertTrue(canConnectWithMqtt(addressSpace, username, password));
     }
 
     private void assertCannotConnect(AddressSpace addressSpace, String username, String password) throws Exception {
@@ -176,8 +168,7 @@ public class AuthenticationTest extends TestBase {
         } catch (ConnectTimeoutException e) {
         }
 
-        // TODO: Enable this when mqtt is stable enough
-        // assertFalse(canConnectWithMqtt(addressSpace, username, password));
+        assertFalse(canConnectWithMqtt(addressSpace, username, password));
     }
 
 
@@ -232,15 +223,14 @@ public class AuthenticationTest extends TestBase {
         return (sent.get(1, TimeUnit.MINUTES) == received.get(1, TimeUnit.MINUTES).size());
     }
 
-    private boolean canConnectWithMqtt(String name, String username, String password) throws Exception {
-        AddressSpace addressSpace = new AddressSpace(name);
+    private boolean canConnectWithMqtt(AddressSpace addressSpace, String username, String password) throws Exception {
         MqttClient client = mqttClientFactory.createClient(addressSpace);
         MqttConnectOptions options = client.getMqttConnectOptions();
         options.setUserName(username);
         options.setPassword(password.toCharArray());
 
-        Future<List<String>> received = client.recvMessages("t1", 1);
-        Future<Integer> sent = client.sendMessages("t1", Arrays.asList("msgt1"));
+        Future<List<String>> received = client.recvMessages(mqttAddress, 1);
+        Future<Integer> sent = client.sendMessages(mqttAddress, Arrays.asList("msg1"));
 
         return (sent.get(1, TimeUnit.MINUTES) == received.get(1, TimeUnit.MINUTES).size());
     }
