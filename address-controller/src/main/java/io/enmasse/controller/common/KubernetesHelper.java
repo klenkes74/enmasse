@@ -153,7 +153,7 @@ public class KubernetesHelper implements Kubernetes {
             RoleBinding roleBinding = new RoleBindingBuilder()
                     .editOrNewMetadata()
                     .withNamespace(namespace)
-                    .withName("edit")
+                    .withName("tenant-edit")
                     .endMetadata()
                     .addToUserNames("system:serviceaccount:" + namespace + ":default")
                     .addNewSubject()
