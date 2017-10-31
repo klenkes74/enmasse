@@ -25,7 +25,6 @@ import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapList;
 import io.fabric8.kubernetes.api.model.DoneableConfigMap;
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.openshift.client.OpenShiftClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,7 +77,9 @@ public class ConfigMapAddressApi implements AddressApi, Resource<Address> {
         Map<String, String> data = configMap.getData();
 
         try {
-            return addressResolver.resolveDefaults(mapper.readValue(data.get("config.json"), Address.class));
+            Address.Builder builder = addressResolver.resolveDefaults(mapper.readValue(data.get("config.json"), Address.class));
+            builder.setVersion(configMap.getMetadata().getResourceVersion());
+            return builder.build();
         } catch (Exception e) {
             log.warn("Unable to decode address", e);
             throw new RuntimeException(e);
@@ -114,16 +115,23 @@ public class ConfigMapAddressApi implements AddressApi, Resource<Address> {
     }
 
     private void createOrReplace(Address address) {
-        Address withDefaults = addressResolver.resolveDefaults(address);
+        Address withDefaults = addressResolver.resolveDefaults(address).build();
+        withDefaults.validate(addressResolver);
+
         String name = KubeUtil.sanitizeName("address-config-" + withDefaults.getName());
         DoneableConfigMap builder = client.configMaps().inNamespace(namespace).withName(name).createOrReplaceWithNew()
-                .withNewMetadata()
+                .editOrNewMetadata()
                 .withName(name)
                 .addToLabels(LabelKeys.TYPE, "address-config")
                 // TODO: Support other ways of doing this
                 .addToAnnotations(AnnotationKeys.CLUSTER_ID, name)
                 .addToAnnotations(AnnotationKeys.ADDRESS_SPACE, withDefaults.getAddressSpace())
                 .endMetadata();
+
+        if (withDefaults.getVersion() != null) {
+            builder.editOrNewMetadata()
+                    .withResourceVersion(withDefaults.getVersion());
+        }
 
         try {
             builder.addToData("config.json", mapper.writeValueAsString(withDefaults));
