@@ -125,6 +125,7 @@ public class AddressController extends AbstractVerticle implements Watcher<Addre
 
         // Perform status check
         checkStatuses(newAddressSet);
+        Thread.sleep(30_000);
         for (Address address : newAddressSet) {
             try {
                 addressApi.replaceAddress(address);
