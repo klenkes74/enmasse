@@ -20,9 +20,12 @@ var events = require('events');
 var kubernetes = require('./kubernetes.js');
 var log = require('./log.js').logger();
 
-function AddressSource() {
+function AddressSource(config) {
+    this.config = config;
+    var options = config || {};
+    options.selector = 'type=address-config';
     events.EventEmitter.call(this);
-    this.watcher = kubernetes.watch('configmaps', {selector:'type=address-config'});
+    this.watcher = kubernetes.watch('configmaps', options);
     this.watcher.on('updated', this.updated.bind(this));
     this.readiness = {};
 }
@@ -43,8 +46,7 @@ function extract_address_spec(object) {
 
 AddressSource.prototype.updated = function (objects) {
     var addresses = objects.map(extract_address_spec);
-    log.info('addresses updated: %j', addresses);
-    this.emit('addresses_defined', addresses);
+    log.debug('addresses updated: %j', addresses);
     var self = this;
     this.readiness = objects.reduce(function (map, configmap) {
         var address = extract_address_spec(configmap).address;
@@ -52,19 +54,27 @@ AddressSource.prototype.updated = function (objects) {
         map[address].name = configmap.metadata.name;
         return map;
     }, {});
+    this.emit('addresses_defined', addresses);
 };
 
 AddressSource.prototype.update_status = function (record, ready) {
     function update(configmap) {
         var def = JSON.parse(configmap.data['config.json'])
-        def.status.isReady = ready;
-        configmap.data['config.json'] = JSON.stringify(def);
-        return configmap;
+        if (def.status.isReady !== ready) {
+            def.status.isReady = ready;
+            configmap.data['config.json'] = JSON.stringify(def);
+            return configmap;
+        } else {
+            return undefined;
+        }
     }
-    kubernetes.update('configmaps/' + record.name, update).then(function (result) {
+    return kubernetes.update('configmaps/' + record.name, update, this.config).then(function (result) {
         if (result === 200) {
             record.ready = ready;
             log.info('updated status for %j: %s', record, result);
+        } else if (result === 304) {
+            record.ready = ready;
+            log.debug('no need to update status for %j: %s', record, result);
         } else {
             log.error('failed to update status for %j: %s', record, result);
         }
@@ -78,7 +88,7 @@ AddressSource.prototype.check_status = function (address_stats) {
         var record = this.readiness[address];
         var ready = address_stats[address].propagated === 100;
         if (record !== undefined && ready !== record.ready) {
-            this.update_status(record, ready);
+            return this.update_status(record, ready);
         }
     }
 };

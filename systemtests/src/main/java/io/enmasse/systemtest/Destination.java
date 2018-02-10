@@ -25,36 +25,28 @@ public class Destination {
     private static final String MULTICAST = "multicast";
     private final String address;
     private final String type;
-    private final Optional<String> plan;
+    private final String plan;
 
-    public Destination(String address, String type, Optional<String> plan) {
+    public Destination(String address, String type, String plan) {
         this.address = address;
         this.type = type;
         this.plan = plan;
     }
 
-    public static Destination queue(String address) {
-        return queue(address, Optional.empty());
-    }
-
-    public static Destination queue(String address, Optional<String> plan) {
+    public static Destination queue(String address, String plan) {
         return new Destination(address, QUEUE, plan);
     }
 
-    public static Destination topic(String address) {
-        return new Destination(address, TOPIC, Optional.empty());
-    }
-
-    public static Destination topic(String address, Optional<String> plan) {
+    public static Destination topic(String address, String plan) {
         return new Destination(address, TOPIC, plan);
     }
 
     public static Destination anycast(String address) {
-        return new Destination(address, ANYCAST, Optional.empty());
+        return new Destination(address, ANYCAST, "standard-anycast");
     }
 
     public static Destination multicast(String address) {
-        return new Destination(address, MULTICAST, Optional.empty());
+        return new Destination(address, MULTICAST, "standard-multicast");
     }
 
     public static boolean isQueue(Destination d) {
@@ -73,7 +65,7 @@ public class Destination {
         return address;
     }
 
-    public Optional<String> getPlan() {
+    public String getPlan() {
         return plan;
     }
 
@@ -84,8 +76,8 @@ public class Destination {
      * plan.
      */
     public String getGroup() {
-        if (isQueue(this) && plan.isPresent() && plan.get().startsWith("pooled")) {
-            return plan.get();
+        if (isQueue(this) && plan.startsWith("pooled")) {
+            return plan;
         } else {
             return address;
         }

@@ -2,14 +2,16 @@ package io.enmasse.systemtest;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.client.HttpResponse;
 import io.vertx.ext.web.client.WebClient;
+import io.vertx.ext.web.client.WebClientOptions;
 import io.vertx.ext.web.codec.BodyCodec;
+import org.slf4j.Logger;
 
-import java.net.UnknownHostException;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -17,18 +19,25 @@ import java.util.concurrent.*;
 
 public class AddressApiClient {
     private final WebClient client;
-    private final OpenShift openshift;
+    private final Kubernetes kubernetes;
     private Endpoint endpoint;
     private final Vertx vertx;
     private final int initRetry = 10;
-    private final String addressSpacesPath = "/v1/addressspaces";
-    private final String addressPath = "/v1/addresses";
+    private final String addressSpacesPath = "/apis/enmasse.io/v1/addressspaces";
+    private final String addressPath = "/apis/enmasse.io/v1/addresses";
+    private final String authzString;
+    private static Logger log = CustomLogger.getLogger();
 
-    public AddressApiClient(OpenShift openshift) throws InterruptedException {
+    public AddressApiClient(Kubernetes kubernetes) {
         this.vertx = VertxFactory.create();
-        this.client = WebClient.create(vertx);
-        this.openshift = openshift;
-        this.endpoint = openshift.getRestEndpoint();
+        this.client = WebClient.create(vertx, new WebClientOptions()
+                .setSsl(true)
+                // TODO: Fetch CA and use
+                .setTrustAll(true)
+                .setVerifyHost(false));
+        this.kubernetes = kubernetes;
+        this.endpoint = kubernetes.getRestEndpoint();
+        this.authzString = "Bearer " + kubernetes.getApiToken();
     }
 
     public void close() {
@@ -37,7 +46,7 @@ public class AddressApiClient {
     }
 
 
-    public void createAddressSpace(AddressSpace addressSpace, String authServiceType, String addrSpaceType) throws Exception {
+    public void createAddressSpace(AddressSpace addressSpace, String authServiceType) throws Exception {
         JsonObject config = new JsonObject();
         config.put("apiVersion", "v1");
         config.put("kind", "AddressSpace");
@@ -48,25 +57,32 @@ public class AddressApiClient {
         config.put("metadata", metadata);
 
         JsonObject spec = new JsonObject();
-        spec.put("type", addrSpaceType);
+        spec.put("type", addressSpace.getType().toString().toLowerCase());
+        spec.put("plan", "unlimited-" + addressSpace.getType().toString().toLowerCase());
         config.put("spec", spec);
 
         JsonObject authService = new JsonObject();
         authService.put("type", authServiceType);
         spec.put("authenticationService", authService);
 
-        Logging.log.info("Following payload will be used in POST request: " + config.toString());
+        log.info("Following payload will be used in POST request: " + config.toString());
         CompletableFuture<JsonObject> responsePromise = new CompletableFuture<>();
 
         doRequestNTimes(initRetry, () -> {
             client.post(endpoint.getPort(), endpoint.getHost(), addressSpacesPath)
                     .timeout(20_000)
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .as(BodyCodec.jsonObject())
                     .sendJsonObject(config, ar -> {
                         if (ar.succeeded()) {
-                            responsePromise.complete(responseHandler(ar));
+                            HttpResponse<JsonObject> response = ar.result();
+                            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                                responsePromise.completeExceptionally(new RuntimeException(response.statusCode() + ": " + response.body()));
+                            } else {
+                                responsePromise.complete(responseHandler(ar));
+                            }
                         } else {
-                            Logging.log.warn("Error creating address space {}", addressSpace);
+                            log.warn("Error creating address space {}", addressSpace);
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
@@ -75,20 +91,23 @@ public class AddressApiClient {
     }
 
     public void deleteAddressSpace(AddressSpace addressSpace) throws Exception {
+        String path = addressSpacesPath + "/" + addressSpace.getName();
+        log.info("Following HTTP request will be used for removing address space: '{}'", path);
         CompletableFuture<JsonObject> responsePromise = new CompletableFuture<>();
         doRequestNTimes(initRetry, () -> {
-            client.delete(endpoint.getPort(), endpoint.getHost(), addressSpacesPath + "/" + addressSpace.getName())
+            client.delete(endpoint.getPort(), endpoint.getHost(), path)
                     .as(BodyCodec.jsonObject())
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .timeout(20_000)
                     .send(ar -> {
                         if (ar.succeeded()) {
                             responsePromise.complete(responseHandler(ar));
                         } else {
-                            Logging.log.warn("Error deleting address space {}", addressSpace);
+                            log.warn("Error deleting address space {}", addressSpace);
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
-            return responsePromise.get(30, TimeUnit.SECONDS);
+            return responsePromise.get(2, TimeUnit.MINUTES);
         });
     }
 
@@ -104,11 +123,12 @@ public class AddressApiClient {
         return doRequestNTimes(initRetry, () -> {
             client.get(endpoint.getPort(), endpoint.getHost(), addressSpacesPath + "/" + name)
                     .as(BodyCodec.jsonObject())
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .send(ar -> {
                         if (ar.succeeded()) {
                             responsePromise.complete(responseHandler(ar));
                         } else {
-                            Logging.log.warn("Error when getting address space {}", name);
+                            log.warn("Error when getting address space {}", name);
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
@@ -117,7 +137,7 @@ public class AddressApiClient {
     }
 
     public Set<String> listAddressSpaces() throws Exception {
-        Logging.log.info("Following HTTP request will be used for getting address space:" + addressSpacesPath +
+        log.info("Following HTTP request will be used for getting address space:" + addressSpacesPath +
                 " with host: " + endpoint.getHost() + " with Port: " + endpoint.getPort());
 
         CompletableFuture<JsonObject> list = new CompletableFuture<>();
@@ -125,20 +145,21 @@ public class AddressApiClient {
         JsonArray items = doRequestNTimes(initRetry, () -> {
             client.get(endpoint.getPort(), endpoint.getHost(), addressSpacesPath)
                     .as(BodyCodec.jsonObject())
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .timeout(20_000)
                     .send(ar -> {
                         if (ar.succeeded()) {
                             JsonObject object = responseHandler(ar);
                             list.complete(object);
                         } else {
-                            Logging.log.warn("Failed listing address spaces", ar.cause());
+                            log.warn("Failed listing address spaces", ar.cause());
                             list.completeExceptionally(ar.cause());
                         }
                     });
             return list.get(30, TimeUnit.SECONDS);
         }).getJsonArray("items");
 
-        Logging.log.info("Following list of address spaces received" + items.toString());
+        log.info("Following list of address spaces received" + items.toString());
         if (items != null) {
             for (int i = 0; i < items.size(); i++) {
                 spaces.add(items.getJsonObject(i).getJsonObject("metadata").getString("name"));
@@ -159,18 +180,19 @@ public class AddressApiClient {
         StringBuilder path = new StringBuilder();
         path.append(addressPath).append("/").append(addressSpace.getName());
         path.append(addressName.isPresent() ? addressName.get() : "");
-        Logging.log.info("Following HTTP request will be used for getting address: " + path);
+        log.info("Following HTTP request will be used for getting address: " + path);
 
         return doRequestNTimes(initRetry, () -> {
             CompletableFuture<JsonObject> responsePromise = new CompletableFuture<>();
             client.get(endpoint.getPort(), endpoint.getHost(), path.toString())
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .as(BodyCodec.jsonObject())
                     .timeout(20_000)
                     .send(ar -> {
                         if (ar.succeeded()) {
                             responsePromise.complete(responseHandler(ar));
                         } else {
-                            Logging.log.warn("Error when getting addresses");
+                            log.warn("Error when getting addresses");
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
@@ -199,13 +221,14 @@ public class AddressApiClient {
         doRequestNTimes(initRetry, () -> {
             client.delete(endpoint.getPort(), endpoint.getHost(), path)
                     .timeout(20_000)
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .as(BodyCodec.jsonObject())
                     .send(ar -> {
                         if (ar.succeeded()) {
-                            Logging.log.info("Address {} successfully removed", addressName);
+                            log.info("Address {} successfully removed", addressName);
                             responsePromise.complete(responseHandler(ar));
                         } else {
-                            Logging.log.warn("Error during deleting addresses");
+                            log.warn("Error during deleting addresses");
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
@@ -228,7 +251,7 @@ public class AddressApiClient {
             JsonObject spec = new JsonObject();
             spec.put("address", destination.getAddress());
             spec.put("type", destination.getType());
-            destination.getPlan().ifPresent(e -> spec.put("plan", e));
+            spec.put("plan", destination.getPlan());
             entry.put("spec", spec);
 
             items.add(entry);
@@ -248,18 +271,24 @@ public class AddressApiClient {
         StringBuilder path = new StringBuilder();
         path.append(addressPath).append("/").append(addressSpace.getName()).append("/");
 
-        Logging.log.info("Following HTTP request will be used for deploy: " + path);
-        Logging.log.info("Following payload will be used in request: " + config.toString());
+        log.info("Following HTTP request will be used for deploy: " + path);
+        log.info("Following payload will be used in request: " + config.toString());
         CompletableFuture<JsonObject> responsePromise = new CompletableFuture<>();
         doRequestNTimes(initRetry, () -> {
             client.request(httpMethod, endpoint.getPort(), endpoint.getHost(), path.toString())
                     .timeout(20_000)
+                    .putHeader(HttpHeaders.AUTHORIZATION.toString(), authzString)
                     .as(BodyCodec.jsonObject())
                     .sendJsonObject(config, ar -> {
                         if (ar.succeeded()) {
-                            responsePromise.complete(responseHandler(ar));
+                            HttpResponse<JsonObject> response = ar.result();
+                            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                                responsePromise.completeExceptionally(new RuntimeException(response.statusCode() + ": " + response.body()));
+                            } else {
+                                responsePromise.complete(responseHandler(ar));
+                            }
                         } else {
-                            Logging.log.warn("Error when deploying addresses");
+                            log.warn("Error when deploying addresses");
                             responsePromise.completeExceptionally(ar.cause());
                         }
                     });
@@ -283,31 +312,19 @@ public class AddressApiClient {
             return ar.result().body();
         } catch (io.vertx.core.json.DecodeException decEx) {
             if (ar.result().bodyAsString().toLowerCase().contains("application is not available")) {
-                Logging.log.warn("Address-controller is not available.", ar.cause());
+                log.warn("Address-controller is not available.", ar.cause());
                 throw new IllegalStateException("Address-controller is not available.");
             } else {
-                Logging.log.warn("Unexpected object received", ar.cause());
+                log.warn("Unexpected object received", ar.cause());
                 throw new IllegalStateException("JsonObject expected, but following object was received: " + ar.result().bodyAsString());
             }
         }
     }
 
     JsonObject doRequestNTimes(int retry, Callable<JsonObject> fn) throws Exception {
-        try {
+        return TestUtils.doRequestNTimes(retry, () -> {
+            endpoint = kubernetes.getRestEndpoint();
             return fn.call();
-        } catch (Exception ex) {
-            if (ex.getCause() instanceof UnknownHostException && retry > 0) {
-                try {
-                    Logging.log.info("Trying to reload endpoint, remaining iterations: " + retry);
-                    endpoint = openshift.getRestEndpoint();
-                    return doRequestNTimes(retry - 1, fn);
-                } catch (Exception ex2) {
-                    throw ex2;
-                }
-            } else {
-                ex.getCause().printStackTrace();
-                throw ex;
-            }
-        }
+        });
     }
 }

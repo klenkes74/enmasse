@@ -16,136 +16,84 @@
 package io.enmasse.controller.auth;
 
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import io.enmasse.address.model.AddressSpace;
 import io.enmasse.address.model.Endpoint;
-import io.enmasse.k8s.api.AddressSpaceApi;
-import io.enmasse.k8s.api.KubeUtil;
-import io.enmasse.k8s.api.Watch;
-import io.enmasse.k8s.api.Watcher;
-import io.vertx.core.AbstractVerticle;
-import io.vertx.core.Future;
+import io.enmasse.controller.common.ControllerKind;
+import io.enmasse.k8s.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static io.enmasse.controller.common.ControllerReason.CertCreateFailed;
+import static io.enmasse.controller.common.ControllerReason.CertCreated;
+import static io.enmasse.k8s.api.EventLogger.Type.Normal;
+import static io.enmasse.k8s.api.EventLogger.Type.Warning;
 
 /**
  * Manages certificates issuing, revoking etc. for EnMasse services
  */
-public class AuthController extends AbstractVerticle implements Watcher<AddressSpace> {
+public class AuthController {
     private static final Logger log = LoggerFactory.getLogger(AuthController.class.getName());
 
     private final CertManager certManager;
-    private final AddressSpaceApi addressSpaceApi;
-    private Watch watch;
+    private final EventLogger eventLogger;
 
     public AuthController(CertManager certManager,
-                          AddressSpaceApi addressSpaceApi) {
+                          EventLogger eventLogger) {
         this.certManager = certManager;
-        this.addressSpaceApi = addressSpaceApi;
+        this.eventLogger = eventLogger;
     }
 
-    @Override
-    public void start(Future<Void> startFuture) {
-        vertx.executeBlocking(promise -> {
-            try {
-                watch = addressSpaceApi.watchAddressSpaces(this);
-                promise.complete();
-            } catch (Exception e) {
-                promise.fail(e);
-            }
-
-        }, result -> {
-            if (result.succeeded()) {
-                log.info("Started auth controller");
-                startFuture.complete();
-            } else {
-                startFuture.fail(result.cause());
-            }
-        });
-    }
-
-    @Override
-    public void stop(Future<Void> stopFuture) {
-        vertx.executeBlocking(promise -> {
-            try {
-                if (watch != null) {
-                    watch.close();
-                }
-                promise.complete();
-            } catch (Exception e) {
-                promise.fail(e);
-            }
-        }, result -> {
-            if (result.succeeded()) {
-                stopFuture.complete();
-            } else {
-                stopFuture.fail(result.cause());
-            }
-        });
-    }
-
-    @Override
-    public void resourcesUpdated(Set<AddressSpace> addressSpaces) throws Exception {
-        for (AddressSpace addressSpace : addressSpaces) {
-            issueAddressSpaceCert(addressSpace);
-            issueComponentCertificates(addressSpace);
-            for (Endpoint endpoint : addressSpace.getEndpoints()) {
+    public void issueExternalCertificates(AddressSpace addressSpace) throws Exception {
+        List<Endpoint> endpoints = addressSpace.getEndpoints();
+        if (endpoints != null) {
+            for (Endpoint endpoint : endpoints) {
                 if (endpoint.getCertProvider().isPresent()) {
-                    certManager.issueRouteCert(endpoint.getCertProvider().get().getSecretName(), addressSpace.getNamespace());
+                    String secretName = endpoint.getCertProvider().get().getSecretName();
+                    certManager.issueRouteCert(secretName, addressSpace.getNamespace());
                 }
             }
         }
     }
 
-    private void issueAddressSpaceCert(final AddressSpace addressSpace)
-    {
-        vertx.executeBlocking(promise -> {
-            try {
-                final String addressSpaceCaSecretName = KubeUtil.getAddressSpaceCaSecretName(addressSpace.getNamespace());
-                if(!certManager.certExists(addressSpaceCaSecretName)) {
-                    certManager.createSelfSignedCertSecret(addressSpaceCaSecretName);
-                    //put crt into address space
 
-                }
-            } catch (Exception e) {
-                promise.fail(e);
+    public void issueAddressSpaceCert(final AddressSpace addressSpace)
+    {
+        try {
+            final String addressSpaceCaSecretName = KubeUtil.getAddressSpaceCaSecretName(addressSpace.getNamespace());
+            if(!certManager.certExists(addressSpaceCaSecretName)) {
+                certManager.createSelfSignedCertSecret(addressSpaceCaSecretName);
+                //put crt into address space
+                log.info("Issued addressspace ca certificates for {}", addressSpace.getName());
+                eventLogger.log(CertCreated, "Created address space CA", Normal, ControllerKind.AddressSpace, addressSpace.getName());
             }
-        }, result -> {
-            if (result.succeeded()) {
-                log.info("Issued addressspace ca certificates: {}", result.result());
-            } else {
-                log.warn("Error issuing addressspace ca certificate", result.cause());
-            }
-        });
+        } catch (Exception e) {
+            log.warn("Error issuing addressspace ca certificate", e);
+            eventLogger.log(CertCreateFailed, "Error creating certificate",Warning, ControllerKind.AddressSpace, addressSpace.getName());
+        }
     }
 
-    private void issueComponentCertificates(AddressSpace addressSpace) {
-        vertx.executeBlocking((Future<List<Cert>> promise) -> {
-            try {
-                final String caSecretName = KubeUtil.getAddressSpaceCaSecretName(addressSpace.getNamespace());
-                promise.complete(certManager.listComponents(addressSpace.getNamespace()).stream()
-                        .filter(component -> !certManager.certExists(component))
-                        .map(certManager::createCsr)
-                        .map(request -> certManager.signCsr(request,
-                                                            caSecretName))
-                        .map(cert -> {
-                            certManager.createSecret(cert, caSecretName);
-                            return cert; })
-                        .collect(Collectors.toList()));
-            } catch (Exception e) {
-                promise.fail(e);
+    public void issueComponentCertificates(AddressSpace addressSpace) {
+        try {
+            final String caSecretName = KubeUtil.getAddressSpaceCaSecretName(addressSpace.getNamespace());
+            List<Cert> certs = certManager.listComponents(addressSpace.getNamespace()).stream()
+                    .filter(component -> !certManager.certExists(component))
+                    .map(certManager::createCsr)
+                    .map(request -> certManager.signCsr(request,
+                                                        caSecretName))
+                    .map(cert -> {
+                        certManager.createSecret(cert, caSecretName);
+                        return cert; })
+                    .collect(Collectors.toList());
+
+            if (!certs.isEmpty()) {
+                log.info("Issued component certificates: {}", certs);
+                eventLogger.log(CertCreated, "Created component certificates", Normal, ControllerKind.AddressSpace, addressSpace.getName());
             }
-        }, result -> {
-            if (result.succeeded()) {
-                List<Cert> components = result.result();
-                if (!components.isEmpty()) {
-                    log.info("Issued component certificates: {}", result.result());
-                }
-            } else {
-                log.warn("Error issuing component certificates", result.cause());
-            }
-        });
+        } catch (Exception e) {
+            log.warn("Error issuing component certificates", e);
+            eventLogger.log(CertCreateFailed, "Error creating component certificates", Warning, ControllerKind.AddressSpace, addressSpace.getName());
+        }
     }
 }

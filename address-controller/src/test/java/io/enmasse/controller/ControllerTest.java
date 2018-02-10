@@ -16,13 +16,14 @@
 package io.enmasse.controller;
 
 import io.enmasse.address.model.AddressSpace;
-import io.enmasse.address.model.types.brokered.BrokeredAddressSpaceType;
-import io.enmasse.address.model.types.standard.StandardAddressSpaceType;
-import io.enmasse.controller.auth.UserDatabase;
-import io.enmasse.controller.common.AddressSpaceController;
+import io.enmasse.address.model.Schema;
+import io.enmasse.address.model.Status;
 import io.enmasse.controller.common.Kubernetes;
 import io.enmasse.controller.common.NoneAuthenticationServiceResolver;
+import io.enmasse.k8s.api.EventLogger;
+import io.enmasse.k8s.api.SchemaApi;
 import io.enmasse.k8s.api.TestAddressSpaceApi;
+import io.enmasse.k8s.api.TestSchemaApi;
 import io.fabric8.openshift.client.OpenShiftClient;
 import io.vertx.core.Vertx;
 import io.vertx.ext.unit.TestContext;
@@ -33,13 +34,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.internal.util.collections.Sets;
 
-import java.util.Arrays;
+import java.util.Collections;
 
-import static org.mockito.Matchers.anySet;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @RunWith(VertxUnitRunner.class)
 public class ControllerTest {
@@ -47,19 +46,17 @@ public class ControllerTest {
     private TestAddressSpaceApi testApi;
     private Kubernetes kubernetes;
     private OpenShiftClient client;
-    private AddressSpaceController spaceController;
 
     @Before
     public void setup() {
         vertx = Vertx.vertx();
         client = mock(OpenShiftClient.class);
         kubernetes = mock(Kubernetes.class);
-        spaceController = mock(AddressSpaceController.class);
         testApi = new TestAddressSpaceApi();
 
-        when(spaceController.getAddressSpaceType()).thenReturn(new BrokeredAddressSpaceType());
         when(kubernetes.withNamespace(anyString())).thenReturn(kubernetes);
-        when(kubernetes.hasService("messaging")).thenReturn(true);
+        when(kubernetes.getNamespace()).thenReturn("myspace");
+        when(kubernetes.existsNamespace(anyString())).thenReturn(true);
     }
 
     @After
@@ -69,40 +66,32 @@ public class ControllerTest {
 
     @Test
     public void testController(TestContext context) throws Exception {
-        Controller controller = new Controller(client, testApi, kubernetes, (a) -> new NoneAuthenticationServiceResolver("localhost", 1234), new DummyUserDb(), Arrays.asList(spaceController));
+        EventLogger testLogger = mock(EventLogger.class);
+        SchemaApi schemaApi = new TestSchemaApi();
+        Controller controller = new Controller(client, testApi, kubernetes, (a) -> new NoneAuthenticationServiceResolver("localhost", 1234), testLogger, null, schemaApi);
 
         vertx.deployVerticle(controller, context.asyncAssertSuccess());
 
         AddressSpace a1 = new AddressSpace.Builder()
                 .setName("myspace")
-                .setType(new StandardAddressSpaceType())
+                .setType("type1")
+                .setPlan("myplan")
+                .setStatus(new Status(false))
                 .build();
 
         AddressSpace a2 = new AddressSpace.Builder()
-                .setName("myspace")
-                .setType(new BrokeredAddressSpaceType())
+                .setName("myspace2")
+                .setType("type1")
+                .setPlan("myplan")
+                .setStatus(new Status(false))
                 .build();
 
         controller.resourcesUpdated(Sets.newSet(a1, a2));
 
-        verify(spaceController).resourcesUpdated(anySet());
-    }
-
-    private static class DummyUserDb implements UserDatabase {
-        @Override
-        public boolean hasUser(String username) {
-            return true;
-        }
-
-        @Override
-        public void addUser(String username, String password) {
-
-        }
-
-        @Override
-        public boolean authenticate(String username, String password) {
-            return true;
+        for (AddressSpace space : testApi.listAddressSpaces()) {
+            assertTrue(space.getStatus().isReady());
         }
     }
+
 }
 

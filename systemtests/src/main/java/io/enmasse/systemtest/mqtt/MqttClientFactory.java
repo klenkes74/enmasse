@@ -39,17 +39,19 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.X509TrustManager;
 
+import static org.junit.Assert.assertNotNull;
+
 public class MqttClientFactory {
 
-    private final OpenShift openShift;
+    private final Kubernetes kubernetes;
     private final Environment environment;
     private final AddressSpace defaultAddressSpace;
     private final String username;
     private final String password;
     private final List<MqttClient> clients = new ArrayList<>();
 
-    public MqttClientFactory(OpenShift openShift, Environment environment, AddressSpace defaultAddressSpace, String username, String password) {
-        this.openShift = openShift;
+    public MqttClientFactory(Kubernetes kubernetes, Environment environment, AddressSpace defaultAddressSpace, String username, String password) {
+        this.kubernetes = kubernetes;
         this.environment = environment;
         this.defaultAddressSpace = defaultAddressSpace;
         this.username = username;
@@ -65,6 +67,7 @@ public class MqttClientFactory {
     }
 
     public MqttClient createClient() throws Exception {
+        assertNotNull("Address space is null", defaultAddressSpace);
         return createClient(defaultAddressSpace);
     }
 
@@ -75,7 +78,7 @@ public class MqttClientFactory {
 
         if (environment.useTLS()) {
 
-            mqttEndpoint = openShift.getRouteEndpoint(addressSpace.getNamespace(), "mqtt");
+            mqttEndpoint = kubernetes.getExternalEndpoint(addressSpace.getNamespace(), "mqtt");
 
             SSLContext sslContext = tryGetSSLContext("TLSv1.2", "TLSv1.1", "TLS", "TLSv1");
             sslContext.init(null, new X509TrustManager[]{new X509TrustManager() {
@@ -103,7 +106,7 @@ public class MqttClientFactory {
             }
 
         } else {
-            mqttEndpoint = this.openShift.getEndpoint("mqtt", "mqtt");
+            mqttEndpoint = this.kubernetes.getEndpoint(addressSpace.getNamespace(),"mqtt", "mqtt");
         }
 
         if (username != null && password != null) {

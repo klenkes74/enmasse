@@ -16,18 +16,17 @@
 
 package io.enmasse.systemtest.standard;
 
-import io.enmasse.systemtest.Destination;
-import io.enmasse.systemtest.Logging;
-import io.enmasse.systemtest.TestBase;
-import io.enmasse.systemtest.TestUtils;
+import io.enmasse.systemtest.*;
 import io.enmasse.systemtest.amqp.AmqpClient;
 import io.enmasse.systemtest.amqp.TopicTerminusFactory;
 
+import io.enmasse.systemtest.bases.StandardTestBase;
 import org.apache.qpid.proton.amqp.DescribedType;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.messaging.*;
 import org.apache.qpid.proton.message.Message;
 import org.junit.Test;
+import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.util.*;
@@ -40,18 +39,12 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
-public class TopicTest extends TestBase {
+public class TopicTest extends StandardTestBase {
+    private static Logger log = CustomLogger.getLogger();
 
-    public void testInmemoryTopics() throws Exception {
-        Destination t1 = Destination.topic("inMemoryTopic", Optional.of("inmemory"));
-        setAddresses(t1);
-
-        AmqpClient topicClient = amqpClientFactory.createTopicClient();
-        runTopicTest(topicClient, t1, 2048);
-    }
-
-    public void testPersistedTopics() throws Exception {
-        Destination t1 = Destination.topic("persistedTopic", Optional.of("persisted"));
+    @Test
+    public void testShardedTopic() throws Exception {
+        Destination t1 = Destination.topic("shardedTopic", "sharded-topic");
         setAddresses(t1);
 
         AmqpClient topicClient = amqpClientFactory.createTopicClient();
@@ -62,12 +55,25 @@ public class TopicTest extends TestBase {
         List<String> msgs = TestUtils.generateMessages(msgCount);
         Future<List<Message>> recvMessages = client.recvMessages(dest.getAddress(), msgCount);
 
-        assertThat(client.sendMessages(dest.getAddress(), msgs).get(1, TimeUnit.MINUTES), is(msgs.size()));
-        assertThat(recvMessages.get(1, TimeUnit.MINUTES).size(), is(msgs.size()));
+        assertThat("Wrong count of messages sent",
+                client.sendMessages(dest.getAddress(), msgs).get(1, TimeUnit.MINUTES), is(msgs.size()));
+        assertThat("Wrong count of messages received",
+                recvMessages.get(1, TimeUnit.MINUTES).size(), is(msgs.size()));
     }
-    
+
+    //disabled due to issue: #693
+    //@Test
+    public void testRestApi() throws Exception {
+        List<String> topics = Arrays.asList("topicRest1", "topicRest2");
+        Destination t1 = Destination.topic(topics.get(0), "sharded-topic");
+        Destination t2 = Destination.topic(topics.get(1), "sharded-topic");
+
+        runRestApiTest(topics, t1, t2);
+    }
+
+    @Test
     public void testMessageSelectorsAppProperty() throws Exception {
-        Destination selTopic = Destination.topic("selectorTopicAppProp");
+        Destination selTopic = Destination.topic("selectorTopicAppProp", "sharded-topic");
         String linkName = "linkSelectorTopicAppProp";
         setAddresses(selTopic);
 
@@ -121,8 +127,8 @@ public class TopicTest extends TestBase {
 
     }
 
-    public void assertAppProperty(AmqpClient client, String linkName, Map<String, Object> appProperties, String selector, Destination dest) throws IOException, InterruptedException, TimeoutException, ExecutionException {
-        Logging.log.info("Application property selector: " + selector);
+    public void assertAppProperty(AmqpClient client, String linkName, Map<String, Object> appProperties, String selector, Destination dest) throws Exception {
+        log.info("Application property selector: " + selector);
         int msgsCount = 10;
         List<Message> listOfMessages = new ArrayList<>();
         for (int i = 0; i < msgsCount; i++) {
@@ -152,19 +158,28 @@ public class TopicTest extends TestBase {
 
         Future<Integer> sent = client.sendMessages(dest.getAddress(), listOfMessages.toArray(new Message[listOfMessages.size()]));
 
-        assertThat(sent.get(1, TimeUnit.MINUTES), is(msgsCount));
-        assertThat(received.get(1, TimeUnit.MINUTES).size(), is(1));
+        assertThat("Wrong count of messages sent",
+                sent.get(1, TimeUnit.MINUTES), is(msgsCount));
+        assertThat("Wrong count of messages received",
+                received.get(1, TimeUnit.MINUTES).size(), is(1));
 
         Map.Entry<String, Object> entry = appProperties.entrySet().iterator().next();
-        assertThat(received.get(1, TimeUnit.MINUTES).get(0).getApplicationProperties().getValue().get(entry.getKey()), is(entry.getValue()));
+        assertThat("Wrong application property",
+                received.get(1, TimeUnit.MINUTES)
+                        .get(0)
+                        .getApplicationProperties()
+                        .getValue()
+                        .get(entry.getKey()),
+                is(entry.getValue()));
 
         //receive rest of messages
-        assertThat(receivedWithoutSel.get(1, TimeUnit.MINUTES).size(), is(msgsCount - 1));
+        assertThat("Wrong count of messages received",
+                receivedWithoutSel.get(1, TimeUnit.MINUTES).size(), is(msgsCount - 1));
     }
 
-
+    @Test
     public void testMessageSelectorsProperty() throws Exception {
-        Destination selTopic = Destination.topic("selectorTopicProp");
+        Destination selTopic = Destination.topic("selectorTopicProp", "sharded-topic");
         String linkName = "linkSelectorTopicProp";
         setAddresses(selTopic);
 
@@ -200,15 +215,17 @@ public class TopicTest extends TestBase {
 
         Future<Integer> sent = client.sendMessages(selTopic.getAddress(), listOfMessages.toArray(new Message[listOfMessages.size()]));
 
-        assertThat(sent.get(1, TimeUnit.MINUTES), is(msgsCount));
+        assertThat("Wrong count of messages sent", sent.get(1, TimeUnit.MINUTES), is(msgsCount));
 
-        assertThat(received.get(1, TimeUnit.MINUTES).size(), is(1));
-        assertThat(received.get(1, TimeUnit.MINUTES).get(0).getGroupId(), is(groupID));
+        assertThat("Wrong count of messages received",
+                received.get(1, TimeUnit.MINUTES).size(), is(1));
+        assertThat("Message with wrong groupID received",
+                received.get(1, TimeUnit.MINUTES).get(0).getGroupId(), is(groupID));
     }
 
     public void testTopicWildcards() throws Exception {
-        Destination t1 = Destination.topic("topic/No1");
-        Destination t2 = Destination.topic("topic/No2");
+        Destination t1 = Destination.topic("topic/No1", "sharded-topic");
+        Destination t2 = Destination.topic("topic/No2", "sharded-topic");
 
         setAddresses(t1, t2);
         AmqpClient amqpClient = amqpClientFactory.createTopicClient();
@@ -222,13 +239,16 @@ public class TopicTest extends TestBase {
                 amqpClient.sendMessages(t1.getAddress(), msgs),
                 amqpClient.sendMessages(t2.getAddress(), msgs));
 
-        assertThat(sendResult.get(0).get(1, TimeUnit.MINUTES), is(msgs.size()));
-        assertThat(sendResult.get(1).get(1, TimeUnit.MINUTES), is(msgs.size()));
-        assertThat(recvResults.get(1, TimeUnit.MINUTES).size(), is(msgs.size() * 2));
+        assertThat("Wrong count of messages sent: sender0",
+                sendResult.get(0).get(1, TimeUnit.MINUTES), is(msgs.size()));
+        assertThat("Wrong count of messages sent: sender1",
+                sendResult.get(1).get(1, TimeUnit.MINUTES), is(msgs.size()));
+        assertThat("Wrong count of messages received",
+                recvResults.get(1, TimeUnit.MINUTES).size(), is(msgs.size() * 2));
     }
 
     public void testDurableLinkRoutedSubscription() throws Exception {
-        Destination dest = Destination.topic("lrtopic");
+        Destination dest = Destination.topic("lrtopic", "sharded-topic");
         String linkName = "systest-durable";
         setAddresses(dest);
         scale(dest, 4);
@@ -241,41 +261,45 @@ public class TopicTest extends TestBase {
         AmqpClient client = amqpClientFactory.createTopicClient();
         List<String> batch1 = Arrays.asList("one", "two", "three");
 
-        Logging.log.info("Receiving first batch");
+        log.info("Receiving first batch");
         Future<List<Message>> recvResults = client.recvMessages(source, linkName, batch1.size());
 
         // Wait for the redirect to kick in
         Thread.sleep(30_000);
 
-        Logging.log.info("Sending first batch");
-        assertThat(client.sendMessages(dest.getAddress(), batch1).get(1, TimeUnit.MINUTES), is(batch1.size()));
-        assertThat(recvResults.get(1, TimeUnit.MINUTES), is(batch1));
+        log.info("Sending first batch");
+        assertThat("Wrong count of messages sent: batch1",
+                client.sendMessages(dest.getAddress(), batch1).get(1, TimeUnit.MINUTES), is(batch1.size()));
+        assertThat("Wrong count of messages received: batch1",
+                recvResults.get(1, TimeUnit.MINUTES), is(batch1));
 
-        Logging.log.info("Sending second batch");
+        log.info("Sending second batch");
         List<String> batch2 = Arrays.asList("four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve");
-        assertThat(client.sendMessages(dest.getAddress(), batch2).get(1, TimeUnit.MINUTES), is(batch2.size()));
+        assertThat("Wrong count of messages sent: batch2",
+                client.sendMessages(dest.getAddress(), batch2).get(1, TimeUnit.MINUTES), is(batch2.size()));
 
-        Logging.log.info("Done, waiting for 20 seconds");
+        log.info("Done, waiting for 20 seconds");
         Thread.sleep(20_000);
 
         source.setAddress("locate/" + dest.getAddress());
         //at present may get one or more of the first three messages
         //redelivered due to DISPATCH-595, so use more lenient checks
-        Logging.log.info("Receiving second batch again");
+        log.info("Receiving second batch again");
         recvResults = client.recvMessages(source, linkName, message -> {
             String body = (String) ((AmqpValue) message.getBody()).getValue();
-            Logging.log.info("received " + body);
+            log.info("received " + body);
             return "twelve".equals(body);
         });
-        assertTrue(recvResults.get(1, TimeUnit.MINUTES).containsAll(batch2));
+        assertTrue("Wrong count of messages received: batch2",
+                recvResults.get(1, TimeUnit.MINUTES).containsAll(batch2));
     }
 
     public void testDurableMessageRoutedSubscription() throws Exception {
-        Destination dest = Destination.topic("mrtopic");
+        Destination dest = Destination.topic("mrtopic", "sharded-topic");
         String address = "myaddress";
-        Logging.log.info("Deploying");
+        log.info("Deploying");
         setAddresses(dest);
-        Logging.log.info("Scaling");
+        log.info("Scaling");
         scale(dest, 1);
 
         Thread.sleep(120_000);
@@ -290,17 +314,19 @@ public class TopicTest extends TestBase {
         sub.setSubject("subscribe");
         sub.setBody(new AmqpValue(dest.getAddress()));
 
-        Logging.log.info("Sending subscribe");
+        log.info("Sending subscribe");
         subClient.sendMessages("$subctrl", sub).get(1, TimeUnit.MINUTES);
 
-        Logging.log.info("Sending 12 messages");
+        log.info("Sending 12 messages");
 
         List<String> msgs = TestUtils.generateMessages(12);
-        assertThat(topicClient.sendMessages(dest.getAddress(), msgs).get(1, TimeUnit.MINUTES), is(msgs.size()));
+        assertThat("Wrong count of messages sent",
+                topicClient.sendMessages(dest.getAddress(), msgs).get(1, TimeUnit.MINUTES), is(msgs.size()));
 
-        Logging.log.info("Receiving 6 messages");
+        log.info("Receiving 6 messages");
         Future<List<Message>> recvResult = queueClient.recvMessages(address, 6);
-        assertThat(recvResult.get(1, TimeUnit.MINUTES).size(), is(6));
+        assertThat("Wrong count of messages received",
+                recvResult.get(1, TimeUnit.MINUTES).size(), is(6));
 
         // Do scaledown and 'reconnect' receiver and verify that we got everything
 
@@ -314,16 +340,17 @@ public class TopicTest extends TestBase {
         Thread.sleep(30_000);
         */
 
-        Logging.log.info("Receiving another 6 messages");
+        log.info("Receiving another 6 messages");
         recvResult = queueClient.recvMessages(address, 6);
-        assertThat(recvResult.get(1, TimeUnit.MINUTES).size(), is(6));
+        assertThat("Wrong count of messages received",
+                recvResult.get(1, TimeUnit.MINUTES).size(), is(6));
 
         Message unsub = Message.Factory.create();
         unsub.setAddress("$subctrl");
         unsub.setCorrelationId(address);
         sub.setBody(new AmqpValue(dest.getAddress()));
         unsub.setSubject("unsubscribe");
-        Logging.log.info("Sending unsubscribe");
+        log.info("Sending unsubscribe");
         subClient.sendMessages("$subctrl", unsub).get(1, TimeUnit.MINUTES);
     }
 

@@ -16,10 +16,9 @@
 package io.enmasse.k8s.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.enmasse.address.model.AddressResolver;
+import io.enmasse.address.model.v1.CodecV1;
 import io.enmasse.config.LabelKeys;
 import io.enmasse.address.model.AddressSpace;
-import io.enmasse.address.model.v1.CodecV1;
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapList;
 import io.fabric8.kubernetes.api.model.DoneableConfigMap;
@@ -35,8 +34,7 @@ import java.util.*;
 public class ConfigMapAddressSpaceApi implements AddressSpaceApi {
     protected final Logger log = LoggerFactory.getLogger(getClass().getName());
     private final OpenShiftClient client;
-    // TODO: Parameterize
-    private static final ObjectMapper mapper = CodecV1.getMapper();
+    private final ObjectMapper mapper = CodecV1.getMapper();
 
     public ConfigMapAddressSpaceApi(OpenShiftClient client) {
         this.client = client;
@@ -44,7 +42,7 @@ public class ConfigMapAddressSpaceApi implements AddressSpaceApi {
 
     @Override
     public Optional<AddressSpace> getAddressSpaceWithName(String name) {
-        ConfigMap map = client.configMaps().withName(KubeUtil.sanitizeName("address-space-" + name)).get();
+        ConfigMap map = client.configMaps().withName(getConfigMapName(name)).get();
         if (map == null) {
             return Optional.empty();
         } else {
@@ -53,36 +51,38 @@ public class ConfigMapAddressSpaceApi implements AddressSpaceApi {
     }
 
     @Override
-    public void createAddressSpace(AddressSpace addressSpace) {
-        create(client.configMaps().createNew(), addressSpace);
+    public void createAddressSpace(AddressSpace addressSpace) throws Exception {
+        try {
+            create(client.configMaps().createNew(), addressSpace);
+        } catch (Exception e) {
+            log.error("Error creating {}", addressSpace.getName());
+            throw e;
+        }
     }
 
     @Override
-    public void replaceAddressSpace(AddressSpace addressSpace) {
+    public void replaceAddressSpace(AddressSpace addressSpace) throws Exception {
         String name = KubeUtil.sanitizeName("address-space-" + addressSpace.getName());
         ConfigMap previous = client.configMaps().withName(name).get();
         if (previous == null) {
             return;
         }
-        createOrReplace(addressSpace);
+        try {
+            create(client.configMaps().createOrReplaceWithNew(), addressSpace);
+        } catch (Exception e) {
+            log.error("Error replacing {}", addressSpace.getName());
+            throw e;
+        }
     }
 
-    private void create(DoneableConfigMap config, AddressSpace addressSpace) {
+    private void create(DoneableConfigMap config, AddressSpace addressSpace) throws Exception {
         String name = KubeUtil.sanitizeName("address-space-" + addressSpace.getName());
-        try {
             config.withNewMetadata()
                 .withName(name)
                 .addToLabels(LabelKeys.TYPE, "address-space")
                 .endMetadata()
                 .addToData("config.json", mapper.writeValueAsString(addressSpace))
                 .done();
-        } catch (Exception e) {
-            log.error("Error createReplace on " + addressSpace);
-        }
-    }
-
-    public void createOrReplace(AddressSpace addressSpace) {
-        create(client.configMaps().createOrReplaceWithNew(), addressSpace);
     }
 
     @Override
@@ -101,10 +101,10 @@ public class ConfigMapAddressSpaceApi implements AddressSpaceApi {
         return instances;
     }
 
-    @Override
-    public AddressSpace getAddressSpaceFromConfig(ConfigMap map) {
+    private AddressSpace getAddressSpaceFromConfig(ConfigMap map) {
         try {
-            return mapper.readValue(map.getData().get("config.json"), AddressSpace.class);
+            AddressSpace addressSpace = mapper.readValue(map.getData().get("config.json"), AddressSpace.class);
+            return new AddressSpace.Builder(addressSpace).setUid(map.getMetadata().getUid()).build();
         } catch (Exception e) {
             log.error("Error decoding address space", e);
             throw new RuntimeException(e);
@@ -133,6 +133,10 @@ public class ConfigMapAddressSpaceApi implements AddressSpaceApi {
 
     @Override
     public AddressApi withAddressSpace(AddressSpace addressSpace) {
-        return new ConfigMapAddressApi(client, new AddressResolver(addressSpace.getType()), addressSpace.getNamespace());
+        return new ConfigMapAddressApi(client, addressSpace.getNamespace());
+    }
+
+    public static String getConfigMapName(String name) {
+        return KubeUtil.sanitizeName("address-space-" + name);
     }
 }

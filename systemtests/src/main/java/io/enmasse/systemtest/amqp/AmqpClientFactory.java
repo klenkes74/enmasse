@@ -18,21 +18,25 @@ package io.enmasse.systemtest.amqp;
 import io.enmasse.systemtest.*;
 import io.vertx.proton.ProtonClientOptions;
 import io.vertx.proton.ProtonQoS;
+import org.slf4j.Logger;
 
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static junit.framework.TestCase.assertNotNull;
+
 public class AmqpClientFactory {
-    private final OpenShift openShift;
+    private final Kubernetes kubernetes;
     private final Environment environment;
     private final AddressSpace defaultAddressSpace;
     private final String defaultUsername;
     private final String defaultPassword;
     private final List<AmqpClient> clients = new ArrayList<>();
+    private static Logger log = CustomLogger.getLogger();
 
-    public AmqpClientFactory(OpenShift openShift, Environment environment, AddressSpace defaultAddressSpace, String defaultUsername, String defaultPassword) {
-        this.openShift = openShift;
+    public AmqpClientFactory(Kubernetes kubernetes, Environment environment, AddressSpace defaultAddressSpace, String defaultUsername, String defaultPassword) {
+        this.kubernetes = kubernetes;
         this.environment = environment;
         this.defaultAddressSpace = defaultAddressSpace;
         this.defaultUsername = defaultUsername;
@@ -75,8 +79,9 @@ public class AmqpClientFactory {
     }
 
     public AmqpClient createClient(TerminusFactory terminusFactory, ProtonQoS qos, AddressSpace addressSpace) throws UnknownHostException, InterruptedException {
+        assertNotNull("Address space is null", addressSpace);
         if (environment.useTLS()) {
-            Endpoint messagingEndpoint = openShift.getRouteEndpoint(addressSpace.getNamespace(), "messaging");
+            Endpoint messagingEndpoint = kubernetes.getExternalEndpoint(addressSpace.getNamespace(), "messaging");
             Endpoint clientEndpoint;
             ProtonClientOptions clientOptions = new ProtonClientOptions();
             clientOptions.setSsl(true);
@@ -89,11 +94,11 @@ public class AmqpClientFactory {
                 clientEndpoint = new Endpoint("localhost", 443);
                 clientOptions.setSniServerName(messagingEndpoint.getHost());
             }
-            Logging.log.info("External endpoint: " + clientEndpoint + ", internal: " + messagingEndpoint);
+            log.info("External endpoint: " + clientEndpoint + ", internal: " + messagingEndpoint);
 
             return createClient(terminusFactory, clientEndpoint, clientOptions, qos);
         } else {
-            return createClient(terminusFactory, openShift.getEndpoint(addressSpace.getNamespace(), "messaging"), qos);
+            return createClient(terminusFactory, kubernetes.getEndpoint(addressSpace.getNamespace(), "messaging", "amqps"), qos);
         }
     }
 

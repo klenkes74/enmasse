@@ -33,13 +33,14 @@ local common = import "common.jsonnet";
           "containers": [
             {
               "image": container_image,
+              "command": ["node", "/opt/app-root/src/bin/subserv.js"],
               "name": "subserv",
               "resources": {
                   "requests": {
-                      "memory": "64Mi"
+                      "memory": "128Mi"
                   },
                   "limits": {
-                      "memory": "64Mi"
+                      "memory": "128Mi"
                   }
               },
               "ports": [

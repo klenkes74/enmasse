@@ -19,7 +19,6 @@ package io.enmasse.controller;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.PasswordAuthentication;
 import java.nio.file.Files;
 import java.util.Map;
 import java.util.Optional;
@@ -31,93 +30,51 @@ public final class ControllerOptions {
     private final String masterUrl;
     private final String namespace;
     private final String token;
-    private final File caDir;
 
     private final String certDir;
     private final File templateDir;
-    private final String messagingHost;
-    private final String mqttHost;
-    private final String consoleHost;
-    private final String certSecret;
-    private final PasswordAuthentication osbAuth;
     private final AuthServiceInfo noneAuthService;
     private final AuthServiceInfo standardAuthService;
-    private final String userDbSecretName;
-    private final boolean enableApiAuth;
+    private final boolean enableRbac;
+
+    private final String environment;
+    private final String addressControllerSa;
+    private final String addressSpaceAdminSa;
 
     private ControllerOptions(String masterUrl, String namespace, String token,
-                              File caDir, File templateDir, String messagingHost, String mqttHost,
-                              String consoleHost, String certSecret, String certDir,
-                              PasswordAuthentication osbAuth, AuthServiceInfo noneAuthService, AuthServiceInfo standardAuthService, String userDbSecretName,
-                              boolean enableApiAuth) {
+                              File templateDir, String certDir,
+                              AuthServiceInfo noneAuthService, AuthServiceInfo standardAuthService, boolean enableRbac, String environment, String addressControllerSa, String addressSpaceAdminSa) {
         this.masterUrl = masterUrl;
         this.namespace = namespace;
         this.token = token;
-        this.caDir = caDir;
         this.templateDir = templateDir;
-        this.messagingHost = messagingHost;
-        this.mqttHost = mqttHost;
-        this.consoleHost = consoleHost;
-        this.certSecret = certSecret;
         this.certDir = certDir;
-        this.osbAuth = osbAuth;
         this.noneAuthService = noneAuthService;
         this.standardAuthService = standardAuthService;
-        this.userDbSecretName = userDbSecretName;
-        this.enableApiAuth = enableApiAuth;
+        this.enableRbac = enableRbac;
+        this.environment = environment;
+        this.addressControllerSa = addressControllerSa;
+        this.addressSpaceAdminSa = addressSpaceAdminSa;
     }
 
-    public String masterUrl() {
+    public String getMasterUrl() {
         return masterUrl;
     }
 
-    public String namespace() {
+    public String getNamespace() {
         return namespace;
     }
 
-    public String token() {
+    public String getToken() {
         return token;
     }
 
-    public File caDir() {
-        return caDir;
-    }
-
-    public Optional<File> templateDir() {
+    public Optional<File> getTemplateDir() {
         return Optional.ofNullable(templateDir);
     }
 
-    public Optional<String> messagingHost() {
-        return Optional.ofNullable(messagingHost);
-    }
-
-    public Optional<String> mqttHost() {
-        return Optional.ofNullable(mqttHost);
-
-    }
-
-    public Optional<String> consoleHost() {
-        return Optional.ofNullable(consoleHost);
-    }
-
-    public Optional<String> certSecret() {
-        return Optional.ofNullable(certSecret);
-    }
-
-    public String certDir() {
+    public String getCertDir() {
         return certDir;
-    }
-
-    public Optional<PasswordAuthentication> osbAuth() {
-        return Optional.ofNullable(osbAuth);
-    }
-
-    public boolean isEnableApiAuth() {
-        return enableApiAuth;
-    }
-
-    public String userDbSecretName() {
-        return userDbSecretName;
     }
 
     public Optional<AuthServiceInfo> getNoneAuthService() {
@@ -126,6 +83,22 @@ public final class ControllerOptions {
 
     public Optional<AuthServiceInfo> getStandardAuthService() {
         return Optional.ofNullable(standardAuthService);
+    }
+
+    public boolean isEnableRbac() {
+        return enableRbac;
+    }
+
+    public String getEnvironment() {
+        return environment;
+    }
+
+    public String getAddressControllerSa() {
+        return addressControllerSa;
+    }
+
+    public String getAddressSpaceAdminSa() {
+        return addressSpaceAdminSa;
     }
 
     public static ControllerOptions fromEnv(Map<String, String> env) throws IOException {
@@ -139,8 +112,6 @@ public final class ControllerOptions {
         String token = getEnv(env, "TOKEN")
                 .orElseGet(() -> readFile(new File(SERVICEACCOUNT_PATH, "token")));
 
-        File caDir = new File(getEnvOrThrow(env, "CA_DIR"));
-
         File templateDir = getEnv(env, "TEMPLATE_DIR")
                 .map(File::new)
                 .orElse(new File("/enmasse-templates"));
@@ -149,37 +120,30 @@ public final class ControllerOptions {
             templateDir = null;
         }
 
-        PasswordAuthentication osbAuth = getEnv(env, "OSB_AUTH_USERNAME")
-                .map(user -> new PasswordAuthentication(user, getEnvOrThrow(env, "OSB_AUTH_PASSWORD").toCharArray()))
-                .orElse(null);
-
         AuthServiceInfo noneAuthService = getAuthService(env, "NONE_AUTHSERVICE_SERVICE_HOST", "NONE_AUTHSERVICE_SERVICE_PORT").orElse(null);
         AuthServiceInfo standardAuthService = getAuthService(env, "STANDARD_AUTHSERVICE_SERVICE_HOST", "STANDARD_AUTHSERVICE_SERVICE_PORT_AMQPS").orElse(null);
 
         String certDir = getEnv(env, "CERT_DIR").orElse("/address-controller-cert");
 
-        String messagingHost = getEnv(env, "MESSAGING_ENDPOINT_HOST").orElse(null);
-        String mqttHost = getEnv(env, "MQTT_ENDPOINT_HOST").orElse(null);
-        String consoleHost = getEnv(env, "CONSOLE_ENDPOINT_HOST").orElse(null);
-        String certSecret = getEnv(env, "MESSAGING_CERT_SECRET").orElse(null);
-        String userDbSecretName = getEnv(env, "ADDRESS_SPACE_USER_DB_SECRET_NAME").filter(str -> !str.isEmpty()).orElse(null);
-        boolean enableApiAuth = Boolean.parseBoolean(getEnv(env, "ADDRESS_CONTROLLER_ENABLE_API_AUTH").orElse("false"));
+        boolean enableRbac = getEnv(env, "ENABLE_RBAC").map(Boolean::parseBoolean).orElse(false);
+
+        String environment = getEnv(env, "ENVIRONMENT").orElse("development");
+
+        String addressControllerSa = getEnv(env, "ADDRESS_CONTROLLER_SA").orElse("enmasse-admin");
+
+        String addressSpaceAdminSa = getEnv(env, "ADDRESS_SPACE_ADMIN_SA").orElse("address-space-admin");
 
         return new ControllerOptions(String.format("https://%s:%s", masterHost, masterPort),
                 namespace,
                 token,
-                caDir,
                 templateDir,
-                messagingHost,
-                mqttHost,
-                consoleHost,
-                certSecret,
                 certDir,
-                osbAuth,
                 noneAuthService,
                 standardAuthService,
-                userDbSecretName,
-                enableApiAuth);
+                enableRbac,
+                environment,
+                addressControllerSa,
+                addressSpaceAdminSa);
     }
 
 

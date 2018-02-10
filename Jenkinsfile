@@ -1,61 +1,97 @@
-node('enmasse') {
-    result = 'failure'
-    timeout(120) {
-        catchError {
-            stage ('checkout') {
+#!/usr/bin/env groovy
+pipeline {
+    agent {
+        node {
+            label 'enmasse'
+        }
+    }
+    environment {
+        STANDARD_JOB_NAME = 'enmasse-master-standard'
+        BROKERED_JOB_NAME = 'enmasse-master-brokered'
+        MAILING_LIST = credentials('MAILING_LIST')
+    }
+    parameters {
+        string(name: 'MAILING_LIST', defaultValue: env.MAILING_LIST, description: 'mailing list when build failed')
+    }
+    options {
+        timeout(time: 1, unit: 'HOURS')
+    }
+    stages {
+        stage('clean') {
+            steps {
+                cleanWs()
+                sh 'docker stop $(docker ps -q) || true'
+                sh 'docker rm $(docker ps -a -q) -f || true'
+                sh 'docker rmi $(docker images -q) -f || true'
+            }
+        }
+        stage('checkout') {
+            steps {
                 checkout scm
+                sh 'echo $(git log --format=format:%H -n1) > actual-commit.file'
                 sh 'git submodule update --init --recursive'
                 sh 'rm -rf artifacts && mkdir -p artifacts'
             }
-            stage ('build') {
-                try {
-                    withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY')]) {
-                        sh 'make build_amqp_module'
-                        sh 'MOCHA_ARGS="--reporter=mocha-junit-reporter" TAG=$BUILD_TAG make'
-                        sh 'cat templates/install/openshift/enmasse.yaml'
-                    }
-                } finally {
-                    junit '**/TEST-*.xml'
-                }
-            }
-            stage ('push docker image') {
-                withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY'), usernamePassword(credentialsId: 'docker-registry-credentials', passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER')]) {
-                    sh 'TAG=$BUILD_TAG make docker_tag'
-                    sh '$DOCKER login -u $DOCKER_USER -p $DOCKER_PASS $DOCKER_REGISTRY'
-                    sh 'TAG=$BUILD_TAG make docker_push'
-                }
-            }
-            stage('start openshift') {
-                sh 'oc cluster up $OC_CLUSTER_ARGS'
-                sh 'sudo chmod -R 777 /var/lib/origin/openshift.local.config'
-            }
-            stage('setup openshift') {
-                sh 'oc login -u system:admin'
-                sh './systemtests/scripts/provision-storage.sh /tmp/mydir pv01'
-            }
-            stage('system tests') {
-                withCredentials([string(credentialsId: 'openshift-host', variable: 'OPENSHIFT_URL'), usernamePassword(credentialsId: 'openshift-credentials', passwordVariable: 'OPENSHIFT_PASSWD', usernameVariable: 'OPENSHIFT_USER')]) {
-                    try {
-                        sh 'ARTIFACTS_DIR=artifacts OPENSHIFT_PROJECT=$BUILD_TAG ./systemtests/scripts/run_test_component.sh templates/install /var/lib/origin/openshift.local.config/master/admin.kubeconfig systemtests'
-                    } finally {
-                        junit '**/TEST-*.xml'
-                    }
-                }
-            }
-            result = 'success'
         }
-        stage('archive artifacts') {
+        stage('build') {
+            steps {
+                withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY')]) {
+                    sh 'MOCHA_ARGS="--reporter=mocha-junit-reporter" COMMIT=$BUILD_TAG make'
+                    sh 'cat templates/install/openshift/enmasse.yaml'
+                }
+            }
+        }
+        stage('push docker image') {
+            steps {
+                withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY'), usernamePassword(credentialsId: 'docker-registry-credentials', passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER')]) {
+                    sh 'TAG=$BUILD_TAG COMMIT=$BUILD_TAG make docker_tag'
+                    sh '$DOCKER login -u $DOCKER_USER -p $DOCKER_PASS $DOCKER_REGISTRY'
+                    sh 'TAG=$BUILD_TAG COMMIT=$BUILD_TAG make docker_push'
+                }
+            }
+        }
+        stage('execute brokered') {
+            environment {
+                ACTUAL_COMMIT = readFile('actual-commit.file')
+            }
+            steps {
+                build job: env.BROKERED_JOB_NAME, wait: false, parameters:
+                        [
+                                [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
+                                [$class: 'StringParameterValue', name: 'MAILING_LIST', value: params.MAILING_LIST],
+                                [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'brokered.**'],
+                                [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
+                        ]
+            }
+        }
+        stage('execute standard') {
+            environment {
+                ACTUAL_COMMIT = readFile('actual-commit.file')
+            }
+            steps {
+                build job: env.STANDARD_JOB_NAME, wait: false, parameters:
+                        [
+                                [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
+                                [$class: 'StringParameterValue', name: 'MAILING_LIST', value: params.MAILING_LIST],
+                                [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'standard.**'],
+                                [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
+                        ]
+            }
+        }
+    }
+    post {
+        always {
+            //store test results from build and system tests
+            junit '**/TEST-*.xml'
+
+            //archive test results and openshift lofs
             archive '**/TEST-*.xml'
             archive 'artifacts/**'
             archive 'templates/install/**'
         }
-        stage('teardown openshift') {
-            sh 'oc cluster down'
-        }
-        stage('notify mailing list') {
-            if (result.equals("failure")) {
-                mail to: "$MAILING_LIST", subject: "EnMasse build has finished with ${result}", body: "See ${env.BUILD_URL}"
-            }
+        failure {
+            echo "build failed"
+            mail to: "$MAILING_LIST", subject: "EnMasse master build has finished with ${result}", body: "See ${env.BUILD_URL}"
         }
     }
 }

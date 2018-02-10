@@ -23,9 +23,10 @@ fi
 
 SCRIPTDIR=`dirname $0`
 TEMPLATE_PARAMS=""
+ADDONS=$SCRIPTDIR/kubernetes/addons
 ENMASSE_TEMPLATE=$SCRIPTDIR/kubernetes/enmasse.yaml
-KEYCLOAK_TEMPLATE=$SCRIPTDIR/kubernetes/addons/standard-authservice.yaml
-NONE_TEMPLATE=$SCRIPTDIR/kubernetes/addons/none-authservice.yaml
+KEYCLOAK_TEMPLATE=$ADDONS/standard-authservice.yaml
+NONE_TEMPLATE=$ADDONS/none-authservice.yaml
 DEFAULT_NAMESPACE=enmasse
 AUTH_SERVICES="none"
 GUIDE=false
@@ -109,15 +110,11 @@ if [ $? -gt 0 ]; then
     runcmd "kubectl create namespace $NAMESPACE" "Create namespace $NAMESPACE"
 fi
 
-runcmd "kubectl create sa enmasse-service-account -n $NAMESPACE" "Create service account for address controller"
+runcmd "kubectl create sa enmasse-admin -n $NAMESPACE" "Create service account for address controller"
+runcmd "kubectl apply -f $ADDONS/standard-plans.yaml -n $NAMESPACE" "Create standard address space plans"
+runcmd "kubectl apply -f $ADDONS/brokered-plans.yaml -n $NAMESPACE" "Create brokered address space plans"
 
-CA_KEY=${TEMPDIR}/ca.key
-CA_CERT=${TEMPDIR}/ca.crt
-runcmd "openssl req -new -x509 -batch -nodes -days 11000 -subj \"/O=io.enmasse/CN=enmasse\" -out ${CA_CERT} -keyout ${CA_KEY}" "Create self-signed certificate"
-fix_key_file_format ${CA_KEY}
-create_tls_secret "kubectl" "enmasse-ca" $CA_KEY $CA_CERT
-
-create_and_sign_cert "kubectl " $CA_KEY $CA_CERT "address-controller.${NAMESPACE}.svc.cluster.local" "address-controller-cert"
+create_self_signed_cert "kubectl" "address-controller.${NAMESPACE}.svc.cluster.local" "address-controller-cert"
 
 for auth_service in $AUTH_SERVICES
 do
@@ -139,6 +136,7 @@ then
 fi
 
 if [ "$MODE" == "singletenant" ]; then
+    runcmd "kubectl create sa address-space-admin -n $NAMESPACE" "Create service account for default address space"
     create_address_space "kubectl" "default" $NAMESPACE
 fi
 

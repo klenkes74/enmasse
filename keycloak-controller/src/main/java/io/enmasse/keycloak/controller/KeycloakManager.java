@@ -17,6 +17,7 @@
 package io.enmasse.keycloak.controller;
 
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -52,7 +53,7 @@ public class KeycloakManager implements Watcher<AddressSpace>
         }
         for(String name : standardAuthSvcSpaces.keySet()) {
             log.info("Creating realm {}", name);
-            keycloak.createRealm(name);
+            keycloak.createRealm(name, name + "-admin");
         }
     }
 }

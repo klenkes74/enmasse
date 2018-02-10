@@ -16,6 +16,7 @@
 
 package io.enmasse.amqp;
 
+import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.Json;
@@ -28,10 +29,7 @@ import org.apache.qpid.proton.message.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
@@ -43,20 +41,28 @@ import java.util.concurrent.TimeoutException;
 public class Artemis implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Artemis.class.getName());
     private static final int maxRetries = 10;
-    private final Vertx vertx;
+    private final Context context;
     private final ProtonConnection connection;
     private final ProtonSender sender;
+    private final ProtonReceiver receiver;
     private final String replyTo;
     private final BlockingQueue<Message> replies;
     private final String brokerContainerId;
+    private long requestTimeoutMillis = 10_000;
 
-    private Artemis(Vertx vertx, ProtonConnection connection, ProtonSender sender, String replyTo, BlockingQueue<Message> replies) {
-        this.vertx = vertx;
+    private Artemis(Context context, ProtonConnection connection, ProtonSender sender, ProtonReceiver receiver, String replyTo, BlockingQueue<Message> replies) {
+        this.context = context;
         this.connection = connection;
         this.brokerContainerId = connection.getRemoteContainer();
         this.sender = sender;
+        this.receiver = receiver;
         this.replyTo = replyTo;
         this.replies = replies;
+    }
+
+    public Artemis setRequestTimeout(long timeout, TimeUnit timeUnit) {
+        this.requestTimeoutMillis = timeUnit.toMillis(timeout);
+        return this;
     }
 
     public static Future<Artemis> createFromConnection(Vertx vertx, ProtonConnection connection) {
@@ -106,7 +112,7 @@ public class Artemis implements AutoCloseable {
         receiver.setSource(source);
         receiver.openHandler(h -> {
             if (h.succeeded()) {
-                promise.complete(new Artemis(vertx, connection, sender, h.result().getRemoteSource().getAddress(), replies));
+                promise.complete(new Artemis(vertx.getOrCreateContext(), connection, sender, receiver, h.result().getRemoteSource().getAddress(), replies));
             } else {
                 if (retries > maxRetries) {
                     promise.fail(h.cause());
@@ -131,7 +137,7 @@ public class Artemis implements AutoCloseable {
         Message message = createOperationMessage(resource, operation);
         Message response = doRequestResponse(message, parameters);
         if (response == null) {
-            throw new TimeoutException("Timed out getting response from broker " + brokerContainerId + " on " + resource + "." + operation + " with parameters: " + parameters);
+            throw new TimeoutException("Timed out getting response from broker " + brokerContainerId + " on " + resource + "." + operation + " with parameters: " + Arrays.toString(parameters));
         }
         return response;
     }
@@ -140,13 +146,13 @@ public class Artemis implements AutoCloseable {
         Message message = createAttributeMessage(resource, attribute);
         Message response = doRequestResponse(message, parameters);
         if (response == null) {
-            throw new TimeoutException("Timed out getting response from broker " + brokerContainerId + " on " + resource + "." + attribute + " with parameters: " + parameters);
+            throw new TimeoutException("Timed out getting response from broker " + brokerContainerId + " on " + resource + "." + attribute + " with parameters: " + Arrays.toString(parameters));
         }
         return response;
     }
 
     private Message doRequestResponse(Message message, Object ... parameters) throws TimeoutException {
-        return doRequestResponse(30, TimeUnit.SECONDS, message, parameters);
+        return doRequestResponse(requestTimeoutMillis, TimeUnit.MILLISECONDS, message, parameters);
     }
 
     private Message doRequestResponse(long timeout, TimeUnit timeUnit, Message message, Object ... parameters) throws TimeoutException {
@@ -186,7 +192,7 @@ public class Artemis implements AutoCloseable {
     }
 
     private Message sendMessage(Message message, long timeout, TimeUnit timeUnit) {
-        vertx.runOnContext(h -> sender.send(message));
+        context.runOnContext(h -> sender.send(message));
         try {
             Message m = replies.poll(timeout, timeUnit);
             return m;
@@ -196,24 +202,29 @@ public class Artemis implements AutoCloseable {
     }
 
     public void deployQueue(String name, String address) throws TimeoutException {
-        log.info("Deploying queue {} with address {}", name, address);
+        log.info("Deploying queue {} with address {} on broker {}", name, address, brokerContainerId);
         doOperation("broker", "deployQueue", address, name, null, false);
     }
 
+    public void createQueue(String name, String address) throws TimeoutException {
+        log.info("Creating queue {} with address {} on broker {}", name, address, brokerContainerId);
+        doOperation("broker", "createQueue", address, "ANYCAST", name, null, true, -1, false, true);
+    }
+
     public void createConnectorService(String name, Map<String, String> connParams) throws TimeoutException {
-        log.info("Creating connector service {}", name);
+        log.info("Creating connector service {} on broker {}", name, brokerContainerId);
         String factoryName = "org.apache.activemq.artemis.integration.amqp.AMQPConnectorServiceFactory";
         doOperation("broker", "createConnectorService", name, factoryName, connParams);
     }
 
     public void destroyQueue(String name) throws TimeoutException {
-        log.info("Destroying queue {}", name);
+        log.info("Destroying queue {} on broker {}", name, brokerContainerId);
         doOperation("broker", "destroyQueue", name, true);
     }
 
     public void destroyConnectorService(String address) throws TimeoutException {
         doOperation("broker", "destroyConnectorService", address);
-        log.info("Destroyed connector service " + address);
+        log.info("Destroyed connector service {} on broker {}", address, brokerContainerId);
     }
 
     public long getNumQueues() throws TimeoutException {
@@ -221,7 +232,7 @@ public class Artemis implements AutoCloseable {
     }
 
     public long getQueueMessageCount(String queueName) throws TimeoutException {
-        log.info("Checking message count for queue {}", queueName);
+        log.info("Checking message count for queue {} on broker {}", queueName, brokerContainerId);
         Message response = doAttribute("queue." + queueName, "messageCount");
         String payload = (String) ((AmqpValue)response.getBody()).getValue();
         JsonArray json = new JsonArray(payload);
@@ -230,7 +241,7 @@ public class Artemis implements AutoCloseable {
 
 
     public String getQueueAddress(String queueName) throws TimeoutException {
-        log.info("Checking queue address for queue {}", queueName);
+        log.info("Checking queue address for queue {} on broker {}", queueName, brokerContainerId);
         Message response = doOperation("queue." + queueName, "getAddress");
         String payload = (String) ((AmqpValue)response.getBody()).getValue();
         JsonArray json = new JsonArray(payload);
@@ -238,13 +249,13 @@ public class Artemis implements AutoCloseable {
     }
 
     public void forceShutdown() throws TimeoutException {
-        log.info("Sending forceShutdown");
+        log.info("Sending forceShutdown to broker {}", brokerContainerId);
         Message request = createOperationMessage("broker", "forceFailover");
         doRequestResponse(10, TimeUnit.SECONDS, request);
     }
 
     public Set<String> getQueueNames() throws TimeoutException {
-        log.info("Retrieving queue names");
+        log.info("Retrieving queue names for broker {}", brokerContainerId);
         Message response = doOperation("broker", "getQueueNames");
 
         Set<String> queues = new LinkedHashSet<>();
@@ -262,7 +273,7 @@ public class Artemis implements AutoCloseable {
     }
 
     public void close() {
-        vertx.runOnContext(id -> connection.close());
+        context.runOnContext(id -> connection.close());
     }
 
     public void pauseQueue(String queueName) throws TimeoutException {

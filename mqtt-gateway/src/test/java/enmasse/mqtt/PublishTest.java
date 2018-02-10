@@ -35,6 +35,7 @@ import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -48,8 +49,6 @@ public class PublishTest extends MockMqttGatewayTestBase {
     private static final String MQTT_MESSAGE = "Hello MQTT on EnMasse";
     private static final String SUBSCRIBER_ID = "my_subscriber_id";
     private static final String PUBLISHER_ID = "my_publisher_id";
-
-    private Async async;
 
     private int receivedQos;
 
@@ -78,9 +77,11 @@ public class PublishTest extends MockMqttGatewayTestBase {
                 // the minimum of the QoS of the originally published message and the maximum QoS granted by the Server
                 int qos = (receiverQos < publisherQos) ? receiverQos : publisherQos;
 
-                this.mqttReceiver(context, MQTT_TOPIC, receiverQos);
+                Async messageReceived = context.async();
+                this.mqttReceiver(context, MQTT_TOPIC, receiverQos, messageReceived);
                 this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, publisherQos);
 
+                messageReceived.await();
                 context.assertTrue(qos == this.receivedQos);
 
             }
@@ -90,53 +91,65 @@ public class PublishTest extends MockMqttGatewayTestBase {
     @Test
     public void mqttPublishQoS0toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 0);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 0, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 0);
 
+        messageReceived.await();
         context.assertTrue(true);
     }
 
     @Test
     public void mqttPublishQoS1toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 1);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 1, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 1);
 
+        messageReceived.await();
         context.assertTrue(true);
     }
 
     @Test
     public void mqttPublishQoS2toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 2);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 2, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 2);
 
+        messageReceived.await();
         context.assertTrue(true);
     }
 
     @Test
     public void mqttPublishQoS0toAmqp(TestContext context) {
 
-        this.amqpReceiver(context, MQTT_TOPIC, 0);
+        Async messageReceived = context.async();
+        this.amqpReceiver(context, MQTT_TOPIC, 0, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 0);
 
+        messageReceived.await();
         context.assertTrue(true);
     }
 
     @Test
     public void mqttPublishQoS1toAmqp(TestContext context) {
 
-        this.amqpReceiver(context, MQTT_TOPIC, 1);
+        Async messageReceived = context.async();
+        this.amqpReceiver(context, MQTT_TOPIC, 1, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 1);
 
+        messageReceived.await();
         context.assertTrue(true);
     }
 
     @Test
     public void mqttPublishQoS2toAmqp(TestContext context) {
 
-        this.amqpReceiver(context, MQTT_TOPIC, 2);
+        Async messageReceived = context.async();
+        this.amqpReceiver(context, MQTT_TOPIC, 2, messageReceived);
         this.mqttPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 2);
+        messageReceived.await();
 
         context.assertTrue(true);
     }
@@ -144,8 +157,10 @@ public class PublishTest extends MockMqttGatewayTestBase {
     @Test
     public void amqpPublishQoS0toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 0);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 0, messageReceived);
         this.amqpPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 0);
+        messageReceived.await();
 
         // without "durable" header and/or x-opt-mqtt-qos annotation, message always republished with qos = 0
         context.assertTrue(this.receivedQos == 0);
@@ -154,9 +169,11 @@ public class PublishTest extends MockMqttGatewayTestBase {
     @Test
     public void amqpPublishQoS1toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 1);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 1, messageReceived);
         this.amqpPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 1);
 
+        messageReceived.await();
         // using "durable" header, the qos is 1 as default
         context.assertTrue(this.receivedQos == 1);
     }
@@ -164,14 +181,18 @@ public class PublishTest extends MockMqttGatewayTestBase {
     @Test
     public void amqpPublishQoS2toMqtt(TestContext context) {
 
-        this.mqttReceiver(context, MQTT_TOPIC, 2);
+        Async messageReceived = context.async();
+        this.mqttReceiver(context, MQTT_TOPIC, 2, messageReceived);
         this.amqpPublish(context, MQTT_TOPIC, MQTT_MESSAGE, 2);
 
+        messageReceived.await();
         // using "durable" header, the qos is 1 as default
         context.assertTrue(this.receivedQos == 1);
     }
 
-    private void mqttReceiver(TestContext context, String topic, int qos) {
+    private void mqttReceiver(TestContext context, String topic, int qos, Async messageReceived) {
+
+        Async connected = context.async();
 
         try {
 
@@ -183,20 +204,24 @@ public class PublishTest extends MockMqttGatewayTestBase {
 
                 LOG.info("topic: {}, message: {}", t, m);
                 this.receivedQos = m.getQos();
-                this.async.complete();
+                messageReceived.complete();
             });
+            connected.complete();
 
         } catch (MqttException e) {
 
             context.assertTrue(false);
             e.printStackTrace();
         }
+        connected.await();
     }
 
-    private void amqpReceiver(TestContext context, String topic, int qos) {
+    private void amqpReceiver(TestContext context, String topic, int qos, Async receivedMessage) {
 
         // AMQP client connects for receiving the published message
         ProtonClient client = ProtonClient.create(this.vertx);
+
+        Async connected = context.async();
 
         client.connect(MESSAGING_SERVICE_HOST, router.getNormalPort(), done -> {
 
@@ -210,13 +235,17 @@ public class PublishTest extends MockMqttGatewayTestBase {
 
                 ProtonReceiver receiver = connection.createReceiver(topic, options);
 
-                receiver
-                        .setQoS((qos == 0) ? ProtonQoS.AT_MOST_ONCE : ProtonQoS.AT_LEAST_ONCE)
+                receiver.setQoS((qos == 0) ? ProtonQoS.AT_MOST_ONCE : ProtonQoS.AT_LEAST_ONCE)
+                        .openHandler(result -> {
+                            if (result.succeeded()) {
+                                connected.complete();
+                            }
+                        })
                         .handler((d, m) -> {
 
                             LOG.info("topic: {}, message: {}", topic, ((Data)m.getBody()).getValue());
                             d.disposition(Accepted.getInstance(), true);
-                            this.async.complete();
+                            receivedMessage.complete();
 
                         }).open();
 
@@ -226,11 +255,11 @@ public class PublishTest extends MockMqttGatewayTestBase {
                 done.cause().printStackTrace();
             }
         });
+
+        connected.await();
     }
 
     private void amqpPublish(TestContext context, String topic, String payload, int qos) {
-
-        this.async = context.async();
 
         // AMQP client connects for publishing message
         ProtonClient client = ProtonClient.create(this.vertx);
@@ -265,13 +294,9 @@ public class PublishTest extends MockMqttGatewayTestBase {
             }
 
         });
-
-        this.async.await();
     }
 
     private void mqttPublish(TestContext context, String topic, String message, int qos) {
-
-        this.async = context.async();
 
         try {
 
@@ -280,8 +305,6 @@ public class PublishTest extends MockMqttGatewayTestBase {
             client.connect();
 
             client.publish(topic, message.getBytes(), qos, false);
-
-            this.async.await();
 
         } catch (MqttException e) {
 

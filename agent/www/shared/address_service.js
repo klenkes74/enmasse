@@ -108,12 +108,14 @@ AddressDefinition.prototype.update_periodic_deltas = function () {
 
 function AddressService($http) {
     var self = this;  // 'this' is not available in the success funtion of $http.get
+    this.admin_disabled = true;
     this.addresses = [];
     this.address_types = [];
+    this.address_space_type = '';
     this.connections = [];
     this.users = [];
     var ws = rhea.websocket_connect(WebSocket);
-    this.connection = rhea.connect({"connection_details":ws("ws://" + location.hostname + ":" + location.port + "/websocket", ["binary", "AMQPWSB10"]), "reconnect":true});
+    this.connection = rhea.connect({"connection_details":ws("wss://" + location.hostname + ":" + location.port + "/websocket", ["binary", "AMQPWSB10"]), "reconnect":true, rejectUnauthorized:true});
     this.connection.on('message', this.on_message.bind(this));
     this.sender = this.connection.open_sender();
     this.connection.open_receiver();
@@ -237,6 +239,8 @@ AddressService.prototype.on_message = function (context) {
         if (changed && this.callback) this.callback('address:deleted');
     } else if (context.message.subject === 'address_types') {
         this.address_types = context.message.body;
+        this.address_space_type = context.message.application_properties.address_space_type;
+        this.admin_disabled = context.message.application_properties.disable_admin;
         if (this.callback) this.callback('address_types');
     } else if (context.message.subject === 'connection') {
         this.update_connection(context.message.body);

@@ -16,9 +16,9 @@
 
 package io.enmasse.controller;
 
+import io.enmasse.address.model.v1.SchemaProvider;
 import io.enmasse.controller.api.JacksonConfig;
 import io.enmasse.controller.api.AuthInterceptor;
-import io.enmasse.controller.api.osb.v2.OSBServiceBase;
 import io.enmasse.controller.api.osb.v2.bind.OSBBindingService;
 import io.enmasse.controller.api.osb.v2.catalog.OSBCatalogService;
 import io.enmasse.controller.api.osb.v2.lastoperation.OSBLastOperationService;
@@ -29,10 +29,8 @@ import io.enmasse.controller.api.v1.http.HttpAddressSpaceService;
 import io.enmasse.controller.api.v1.http.HttpHealthService;
 import io.enmasse.controller.api.v1.http.HttpSchemaService;
 import io.enmasse.controller.api.v1.http.*;
-import io.enmasse.controller.auth.BasicAuthHandler;
-import io.enmasse.controller.auth.SingleUserAuthenticator;
-import io.enmasse.controller.auth.UserAuthenticator;
 import io.enmasse.controller.api.DefaultExceptionMapper;
+import io.enmasse.controller.common.Kubernetes;
 import io.enmasse.k8s.api.AddressSpaceApi;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.CompositeFuture;
@@ -46,7 +44,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.net.PasswordAuthentication;
 
 /**
  * HTTP server for deploying address config
@@ -56,19 +53,20 @@ public class HTTPServer extends AbstractVerticle {
     public static final int SECURE_PORT = 8081;
     private static final Logger log = LoggerFactory.getLogger(HTTPServer.class.getName());
     private final AddressSpaceApi addressSpaceApi;
+    private final SchemaProvider schemaProvider;
     private final String certDir;
-    private final PasswordAuthentication osbAuth;
-    private final UserAuthenticator userAuthenticator;
+    private final Kubernetes kubernetes;
+    private final boolean enableRbac;
 
     private HttpServer httpServer;
     private HttpServer httpsServer;
 
-    public HTTPServer(AddressSpaceApi addressSpaceApi, String certDir, PasswordAuthentication osbAuth, UserAuthenticator userAuthenticator) {
+    public HTTPServer(AddressSpaceApi addressSpaceApi, SchemaProvider schemaProvider, String certDir, Kubernetes kubernetes, boolean enableRbac) {
         this.addressSpaceApi = addressSpaceApi;
+        this.schemaProvider = schemaProvider;
         this.certDir = certDir;
-        this.osbAuth = osbAuth;
-        this.userAuthenticator = userAuthenticator;
-
+        this.kubernetes = kubernetes;
+        this.enableRbac = enableRbac;
     }
 
     @Override
@@ -79,28 +77,27 @@ public class HTTPServer extends AbstractVerticle {
         deployment.getProviderFactory().registerProvider(DefaultExceptionMapper.class);
         deployment.getProviderFactory().registerProvider(JacksonConfig.class);
 
-        if (osbAuth != null) {
-            deployment.getProviderFactory().registerProviderInstance(new AuthInterceptor(
-                    new BasicAuthHandler(new SingleUserAuthenticator(osbAuth)), OSBServiceBase.BASE_URI));
-        }
-
-        if (userAuthenticator != null) {
-            deployment.getProviderFactory().registerProviderInstance(new AuthInterceptor(new BasicAuthHandler(userAuthenticator), HttpAddressService.BASE_URI));
+        if (enableRbac) {
+            log.info("Enabling RBAC for REST API");
+            deployment.getProviderFactory().registerProviderInstance(new AuthInterceptor(kubernetes));
+        } else {
+            log.info("Disabling authentication and authorization for REST API");
+            deployment.getProviderFactory().registerProviderInstance(new AllowAllAuthInterceptor());
         }
 
         deployment.getRegistry().addSingletonResource(new SwaggerSpecEndpoint());
-        deployment.getRegistry().addSingletonResource(new HttpAddressService(addressSpaceApi));
-        deployment.getRegistry().addSingletonResource(new HttpSchemaService());
-        deployment.getRegistry().addSingletonResource(new HttpAddressSpaceService(addressSpaceApi));
+        deployment.getRegistry().addSingletonResource(new HttpAddressService(addressSpaceApi, schemaProvider));
+        deployment.getRegistry().addSingletonResource(new HttpSchemaService(schemaProvider));
+        deployment.getRegistry().addSingletonResource(new HttpAddressSpaceService(addressSpaceApi, schemaProvider, kubernetes.getNamespace()));
         deployment.getRegistry().addSingletonResource(new HttpHealthService());
         deployment.getRegistry().addSingletonResource(new HttpV1RootService());
         deployment.getRegistry().addSingletonResource(new HttpRootService());
         deployment.getRegistry().addSingletonResource(new HttpAddressRootService(addressSpaceApi));
 
-        deployment.getRegistry().addSingletonResource(new OSBCatalogService(addressSpaceApi));
-        deployment.getRegistry().addSingletonResource(new OSBProvisioningService(addressSpaceApi));
-        deployment.getRegistry().addSingletonResource(new OSBBindingService(addressSpaceApi));
-        deployment.getRegistry().addSingletonResource(new OSBLastOperationService(addressSpaceApi));
+        deployment.getRegistry().addSingletonResource(new OSBCatalogService(addressSpaceApi, kubernetes.getNamespace()));
+        deployment.getRegistry().addSingletonResource(new OSBProvisioningService(addressSpaceApi, kubernetes.getNamespace()));
+        deployment.getRegistry().addSingletonResource(new OSBBindingService(addressSpaceApi, kubernetes.getNamespace()));
+        deployment.getRegistry().addSingletonResource(new OSBLastOperationService(addressSpaceApi, kubernetes.getNamespace()));
 
         VertxRequestHandler requestHandler = new VertxRequestHandler(vertx, deployment);
 

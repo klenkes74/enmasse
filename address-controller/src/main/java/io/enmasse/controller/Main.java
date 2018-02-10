@@ -16,18 +16,13 @@
 
 package io.enmasse.controller;
 
+import java.time.Clock;
 import java.util.*;
 
-import io.enmasse.address.model.AuthenticationServiceResolver;
-import io.enmasse.address.model.AuthenticationServiceType;
-import io.enmasse.address.model.CertProvider;
-import io.enmasse.address.model.Endpoint;
+import io.enmasse.address.model.*;
 import io.enmasse.controller.auth.*;
-import io.enmasse.controller.brokered.BrokeredController;
 import io.enmasse.controller.common.*;
-import io.enmasse.controller.standard.StandardController;
-import io.enmasse.k8s.api.AddressSpaceApi;
-import io.enmasse.k8s.api.ConfigMapAddressSpaceApi;
+import io.enmasse.k8s.api.*;
 import io.fabric8.kubernetes.client.ConfigBuilder;
 import io.fabric8.openshift.client.DefaultOpenShiftClient;
 import io.fabric8.openshift.client.OpenShiftClient;
@@ -45,33 +40,29 @@ public class Main extends AbstractVerticle {
 
     private Main(ControllerOptions options) throws Exception {
         this.controllerClient = new DefaultOpenShiftClient(new ConfigBuilder()
-                .withMasterUrl(options.masterUrl())
-                .withOauthToken(options.token())
-                .withNamespace(options.namespace())
+                .withMasterUrl(options.getMasterUrl())
+                .withOauthToken(options.getToken())
+                .withNamespace(options.getNamespace())
                 .build());
         this.options = options;
-        this.kubernetes = new KubernetesHelper(options.namespace(), controllerClient, options.templateDir());
+        this.kubernetes = new KubernetesHelper(options.getNamespace(), controllerClient, options.getToken(), options.getEnvironment(), options.getTemplateDir(), options.getAddressControllerSa(), options.getAddressSpaceAdminSa(), options.isEnableRbac());
     }
 
     @Override
     public void start(Future<Void> startPromise) {
+        SchemaApi schemaApi = new ConfigMapSchemaApi(controllerClient, options.getNamespace());
         AddressSpaceApi addressSpaceApi = new ConfigMapAddressSpaceApi(controllerClient);
+        EventLogger eventLogger = new KubeEventLogger(controllerClient, controllerClient.getNamespace(), Clock.systemUTC(), "enmasse-controller");
 
-        UserDatabase userDb = null;
-        if (options.isEnableApiAuth()) {
-            userDb = SecretUserDatabase.create(controllerClient, options.namespace(), options.userDbSecretName());
-        }
-
-        CertManager certManager = OpenSSLCertManager.create(controllerClient, options.caDir(), options.namespace());
+        CertManager certManager = OpenSSLCertManager.create(controllerClient, options.getNamespace());
         AuthenticationServiceResolverFactory resolverFactory = createResolverFactory(options);
-        StandardController standardController = new StandardController(vertx, addressSpaceApi, kubernetes, resolverFactory, options.certDir());
-        BrokeredController brokeredController = new BrokeredController();
+        EventLogger authEventLogger = new KubeEventLogger(controllerClient, controllerClient.getNamespace(), Clock.systemUTC(), "auth-controller");
+        AuthController authController = new AuthController(certManager, authEventLogger);
 
         deployVerticles(startPromise,
-                new Deployment(new AuthController(certManager, addressSpaceApi)),
-                new Deployment(new Controller(controllerClient, addressSpaceApi, kubernetes, resolverFactory, userDb, Arrays.asList(standardController, brokeredController))),
+                new Deployment(new Controller(controllerClient, addressSpaceApi, kubernetes, resolverFactory, eventLogger, authController, schemaApi)),
 //                new Deployment(new AMQPServer(kubernetes.getNamespace(), addressSpaceApi, options.port())),
-                new Deployment(new HTTPServer(addressSpaceApi, options.certDir(), options.osbAuth().orElse(null), userDb), new DeploymentOptions().setWorker(true)));
+                new Deployment(new HTTPServer(addressSpaceApi, schemaApi, options.getCertDir(), kubernetes, kubernetes.isRBACSupported()), new DeploymentOptions().setWorker(true)));
     }
 
     private AuthenticationServiceResolverFactory createResolverFactory(ControllerOptions options) {

@@ -6,27 +6,28 @@ local messagingService = import "messaging-service.jsonnet";
 local mqttService = import "mqtt-service.jsonnet";
 local consoleService = import "console-service.jsonnet";
 local images = import "images.jsonnet";
+local roles = import "roles.jsonnet";
 {
-  common(with_kafka)::
+  cluster_roles::
   {
     "apiVersion": "v1",
     "kind": "List",
-    "items": [ templateConfig.generate(with_kafka),
-               addressController.deployment(images.address_controller, "enmasse-template-config", "enmasse-ca", "address-controller-cert", "false"),
-               common.empty_secret("address-controller-userdb"),
-               restapiRoute.ingress(""),
+    "items": [
+      roles.address_admin_role,
+      roles.namespace_admin_role,
+      roles.event_reporter_role,
+    ]
+  },
+
+  list::
+  {
+    "apiVersion": "v1",
+    "kind": "List",
+    "items": [ templateConfig.global,
+               addressController.deployment(images.address_controller, "enmasse-template-config", "address-controller-cert", "development", "false", "enmasse-admin", "address-space-admin"),
                addressController.internal_service ]
   },
 
   external_lb::
-  {
-    "apiVersion": "v1",
-    "kind": "List",
-    "items": [ 
-      addressController.external_service,
-      messagingService.external,
-      mqttService.external,
-      consoleService.external
-    ]
-  }
+    addressController.external_service,
 }

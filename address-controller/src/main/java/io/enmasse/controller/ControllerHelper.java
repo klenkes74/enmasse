@@ -16,28 +16,27 @@
 package io.enmasse.controller;
 
 import io.enmasse.config.AnnotationKeys;
-import io.enmasse.config.LabelKeys;
-import io.enmasse.controller.auth.UserDatabase;
-import io.enmasse.controller.common.AuthenticationServiceResolverFactory;
-import io.enmasse.controller.common.Kubernetes;
-import io.enmasse.controller.common.KubernetesHelper;
-import io.enmasse.controller.common.TemplateParameter;
+import io.enmasse.controller.common.*;
 import io.enmasse.address.model.*;
-import io.enmasse.address.model.types.Plan;
-import io.enmasse.address.model.types.TemplateConfig;
+import io.enmasse.controller.common.ControllerKind;
+import io.enmasse.k8s.api.EventLogger;
+import io.enmasse.k8s.api.SchemaApi;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.KubernetesList;
-import io.fabric8.kubernetes.api.model.Namespace;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.openshift.client.ParameterValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static io.enmasse.controller.common.ControllerReason.AddressSpaceCreated;
+import static io.enmasse.controller.common.ControllerReason.AddressSpaceDeleteFailed;
+import static io.enmasse.controller.common.ControllerReason.AddressSpaceDeleted;
+import static io.enmasse.k8s.api.EventLogger.Type.Normal;
+import static io.enmasse.k8s.api.EventLogger.Type.Warning;
 
 /**
  * Helper class for managing a standard address space.
@@ -47,25 +46,40 @@ public class ControllerHelper {
     private final Kubernetes kubernetes;
     private final String namespace;
     private final AuthenticationServiceResolverFactory authResolverFactory;
-    private final UserDatabase userDatabase;
+    private final EventLogger eventLogger;
+    private final SchemaApi schemaApi;
+    private final AddressSpaceResolver addressSpaceResolver;
 
-    public ControllerHelper(Kubernetes kubernetes, AuthenticationServiceResolverFactory authResolverFactory, UserDatabase userDatabase) {
+    public ControllerHelper(Kubernetes kubernetes, AuthenticationServiceResolverFactory authResolverFactory, EventLogger eventLogger, SchemaApi schemaApi) {
         this.kubernetes = kubernetes;
         this.namespace = kubernetes.getNamespace();
         this.authResolverFactory = authResolverFactory;
-        this.userDatabase = userDatabase;
+        this.eventLogger = eventLogger;
+        this.schemaApi = schemaApi;
+        Schema schema = schemaApi.getSchema();
+        this.addressSpaceResolver = new AddressSpaceResolver(schema);
     }
 
     public void create(AddressSpace addressSpace) {
         Kubernetes instanceClient = kubernetes.withNamespace(addressSpace.getNamespace());
-        if (instanceClient.hasService("messaging")) {
-            return;
-        }
-        log.info("Creating address space {}", addressSpace);
-        if (!addressSpace.getNamespace().equals(namespace)) {
-            kubernetes.createNamespace(addressSpace.getName(), addressSpace.getNamespace());
-            kubernetes.addDefaultEditPolicy(addressSpace.getNamespace());
-            kubernetes.addSystemImagePullerPolicy(namespace, addressSpace.getNamespace());
+
+        addressSpaceResolver.validate(addressSpace);
+
+        if (namespace.equals(addressSpace.getNamespace())) {
+            if (instanceClient.hasService("messaging")) {
+                return;
+            }
+        } else {
+            if (kubernetes.existsNamespace(addressSpace.getNamespace())) {
+                return;
+            }
+            log.info("Creating address space {}", addressSpace);
+            kubernetes.createNamespace(addressSpace);
+            kubernetes.addAddressSpaceAdminRoleBinding(addressSpace);
+            kubernetes.addSystemImagePullerPolicy(namespace, addressSpace);
+            kubernetes.addAddressSpaceRoleBindings(addressSpace);
+            kubernetes.createServiceAccount(addressSpace.getNamespace(), kubernetes.getAddressSpaceAdminSa());
+            schemaApi.copyIntoNamespace(addressSpaceResolver.getPlan(addressSpaceResolver.getType(addressSpace), addressSpace), addressSpace.getNamespace());
         }
 
         StandardResources resourceList = createResourceList(addressSpace);
@@ -81,38 +95,8 @@ public class ControllerHelper {
             kubernetes.createEndpoint(endpoint, service, addressSpace.getName(), addressSpace.getNamespace());
         }
 
-        for (String secretName : resourceList.routeEndpoints.stream()
-                .filter(endpoint -> endpoint.getCertProvider().isPresent())
-                .map(endpoint -> endpoint.getCertProvider().get().getSecretName())
-                .collect(Collectors.toSet())) {
-            kubernetes.createSecretWithDefaultPermissions(secretName, addressSpace.getNamespace());
-        }
-
         kubernetes.create(resourceList.resourceList, addressSpace.getNamespace());
-    }
-
-    private static String generateString(Random rng, String characters, int length)
-    {
-        char[] text = new char[length];
-        for (int i = 0; i < length; i++)
-        {
-            text[i] = characters.charAt(rng.nextInt(characters.length()));
-        }
-        return new String(text);
-    }
-
-
-    private Optional<String> createAddressSpacePassword(AddressSpace addressSpace) {
-        return Optional.ofNullable(userDatabase)
-                .filter(database -> !database.hasUser(addressSpace.getName()))
-                .map(database -> {
-                    SecureRandom random = new SecureRandom();
-                    random.setSeed(System.currentTimeMillis());
-                    String password = generateString(random, "abcdefghijklmnopqrstuvwxyz0123456789", 49);
-                    String encoded = Base64.getEncoder().encodeToString(password.getBytes(StandardCharsets.UTF_8));
-                    userDatabase.addUser(addressSpace.getName(), encoded);
-                    return encoded;
-                });
+        eventLogger.log(AddressSpaceCreated, "Created address space", Normal, ControllerKind.AddressSpace, addressSpace.getName());
     }
 
     private static class StandardResources {
@@ -121,45 +105,48 @@ public class ControllerHelper {
     }
 
     private StandardResources createResourceList(AddressSpace addressSpace) {
-        Plan plan = addressSpace.getPlan();
         StandardResources returnVal = new StandardResources();
         returnVal.resourceList = new KubernetesList();
         returnVal.routeEndpoints = new ArrayList<>();
 
+        AddressSpaceType addressSpaceType = addressSpaceResolver.getType(addressSpace);
+        AddressSpacePlan plan = addressSpaceResolver.getPlan(addressSpaceType, addressSpace);
+        ResourceDefinition resourceDefinition = addressSpaceResolver.getResourceDefinition(plan);
 
-        if (plan.getTemplateConfig().isPresent()) {
-            List<ParameterValue> parameterValues = new ArrayList<>();
+        if (resourceDefinition != null && resourceDefinition.getTemplateName().isPresent()) {
+            Map<String, String> parameters = new HashMap<>();
             AuthenticationService authService = addressSpace.getAuthenticationService();
             AuthenticationServiceResolver authResolver = authResolverFactory.getResolver(authService.getType());
 
-            parameterValues.add(new ParameterValue(TemplateParameter.ADDRESS_SPACE, addressSpace.getName()));
-            parameterValues.add(new ParameterValue(TemplateParameter.ADDRESS_SPACE_SERVICE_HOST, getApiServer()));
-            parameterValues.add(new ParameterValue(TemplateParameter.AUTHENTICATION_SERVICE_HOST, authResolver.getHost(authService)));
-            parameterValues.add(new ParameterValue(TemplateParameter.AUTHENTICATION_SERVICE_PORT, String.valueOf(authResolver.getPort(authService))));
-            authResolver.getCaSecretName(authService).ifPresent(secretName -> kubernetes.getSecret(secretName).ifPresent(secret -> parameterValues.add(new ParameterValue(TemplateParameter.AUTHENTICATION_SERVICE_CA_CERT, secret.getData().get("tls.crt")))));
-            kubernetes.getSecret("enmasse-ca").ifPresent(secret -> parameterValues.add(new ParameterValue(TemplateParameter.ADDRESS_CONTROLLER_CA_CERT, secret.getData().get("tls.crt"))));
-            authResolver.getClientSecretName(authService).ifPresent(secret -> parameterValues.add(new ParameterValue(TemplateParameter.AUTHENTICATION_SERVICE_CLIENT_SECRET, secret)));
-            authResolver.getSaslInitHost(addressSpace.getName(), authService).ifPresent(saslInitHost -> parameterValues.add(new ParameterValue(TemplateParameter.AUTHENTICATION_SERVICE_SASL_INIT_HOST, saslInitHost)));
-            createAddressSpacePassword(addressSpace).ifPresent(password -> parameterValues.add(new ParameterValue(TemplateParameter.ADDRESS_SPACE_PASSWORD, password)));
+            parameters.put(TemplateParameter.ADDRESS_SPACE, addressSpace.getName());
+            parameters.put(TemplateParameter.ADDRESS_SPACE_SERVICE_HOST, getApiServer());
+            parameters.put(TemplateParameter.AUTHENTICATION_SERVICE_HOST, authResolver.getHost(authService));
+            parameters.put(TemplateParameter.AUTHENTICATION_SERVICE_PORT, String.valueOf(authResolver.getPort(authService)));
+
+            authResolver.getCaSecretName(authService).ifPresent(secretName -> kubernetes.getSecret(secretName).ifPresent(secret -> parameters.put(TemplateParameter.AUTHENTICATION_SERVICE_CA_CERT, secret.getData().get("tls.crt"))));
+            kubernetes.getSecret("address-controller-cert").ifPresent(secret -> parameters.put(TemplateParameter.ADDRESS_CONTROLLER_CA_CERT, secret.getData().get("tls.crt")));
+            authResolver.getClientSecretName(authService).ifPresent(secret -> parameters.put(TemplateParameter.AUTHENTICATION_SERVICE_CLIENT_SECRET, secret));
+            authResolver.getSaslInitHost(addressSpace.getName(), authService).ifPresent(saslInitHost -> parameters.put(TemplateParameter.AUTHENTICATION_SERVICE_SASL_INIT_HOST, saslInitHost));
 
             // Step 1: Validate endpoints and remove unknown
-            List<String> availableServices = addressSpace.getType().getServiceNames();
+            List<String> availableServices = addressSpaceType.getServiceNames();
             Map<String, CertProvider> serviceCertProviders = new HashMap<>();
 
-            List<Endpoint> endpoints = new ArrayList<>(addressSpace.getEndpoints());
-            Iterator<Endpoint> it = endpoints.iterator();
-            while (it.hasNext()) {
-                Endpoint endpoint = it.next();
-                if (!availableServices.contains(endpoint.getService())) {
-                    log.info("Unknown service {} for endpoint {}, removing", endpoint.getService(), endpoint.getName());
-                    it.remove();
-                } else {
-                    endpoint.getCertProvider().ifPresent(certProvider -> serviceCertProviders.put(endpoint.getService(), certProvider));
+            List<Endpoint> endpoints = null;
+            if (addressSpace.getEndpoints() != null) {
+                endpoints = new ArrayList<>(addressSpace.getEndpoints());
+                Iterator<Endpoint> it = endpoints.iterator();
+                while (it.hasNext()) {
+                    Endpoint endpoint = it.next();
+                    if (!availableServices.contains(endpoint.getService())) {
+                        log.info("Unknown service {} for endpoint {}, removing", endpoint.getService(), endpoint.getName());
+                        it.remove();
+                    } else {
+                        endpoint.getCertProvider().ifPresent(certProvider -> serviceCertProviders.put(endpoint.getService(), certProvider));
+                    }
                 }
-            }
-
+            } else {
             // Step 2: Create endpoints if the user didnt supply any
-            if (endpoints.isEmpty()) {
                 endpoints = availableServices.stream()
                         .map(service -> new Endpoint.Builder().setName(service).setService(service).build())
                         .collect(Collectors.toList());
@@ -169,8 +156,7 @@ public class ControllerHelper {
             for (String service : availableServices) {
                 String secretName = getSecretName(service);
 
-                // Needed until https://github.com/EnMasseProject/enmasse/issues/402 is resolved
-                if (!serviceCertProviders.containsKey(service) && !service.equals("console")) {
+                if (!serviceCertProviders.containsKey(service)) {
                     CertProvider certProvider = new SecretCertProvider(secretName);
                     serviceCertProviders.put(service, certProvider);
                 }
@@ -179,8 +165,7 @@ public class ControllerHelper {
             // Step 3: Ensure all endpoints have their certProviders set
             returnVal.routeEndpoints = endpoints.stream()
                     .map(endpoint -> {
-                        // Needed until https://github.com/EnMasseProject/enmasse/issues/402 is resolved
-                        if (!endpoint.getCertProvider().isPresent() && !endpoint.getService().equals("console")) {
+                        if (!endpoint.getCertProvider().isPresent()) {
                             return new Endpoint.Builder(endpoint)
                                     .setCertProvider(serviceCertProviders.get(endpoint.getService()))
                                     .build();
@@ -190,15 +175,24 @@ public class ControllerHelper {
                     }).collect(Collectors.toList());
 
             if (availableServices.contains("messaging")) {
-                parameterValues.add(new ParameterValue(TemplateParameter.MESSAGING_SECRET, serviceCertProviders.get("messaging").getSecretName()));
+                parameters.put(TemplateParameter.MESSAGING_SECRET, serviceCertProviders.get("messaging").getSecretName());
+            }
+            if (availableServices.contains("console")) {
+                parameters.put(TemplateParameter.CONSOLE_SECRET, serviceCertProviders.get("console").getSecretName());
             }
             if (availableServices.contains("mqtt")) {
-                parameterValues.add(new ParameterValue(TemplateParameter.MQTT_SECRET, serviceCertProviders.get("mqtt").getSecretName()));
+                parameters.put(TemplateParameter.MQTT_SECRET, serviceCertProviders.get("mqtt").getSecretName());
+            }
+
+            parameters.putAll(resourceDefinition.getTemplateParameters());
+
+            List<ParameterValue> parameterValues = new ArrayList<>();
+            for (Map.Entry<String, String> entry : parameters.entrySet()) {
+                parameterValues.add(new ParameterValue(entry.getKey(), entry.getValue()));
             }
 
             // Step 5: Create infrastructure
-            TemplateConfig templateConfig = plan.getTemplateConfig().get();
-            returnVal.resourceList = kubernetes.processTemplate(templateConfig.getName(), parameterValues.toArray(new ParameterValue[0]));
+            returnVal.resourceList = kubernetes.processTemplate(resourceDefinition.getTemplateName().get(), parameterValues.toArray(new ParameterValue[0]));
         }
         return returnVal;
     }
@@ -228,20 +222,21 @@ public class ControllerHelper {
         if (desiredAddressSpaces.size() == 1 && desiredAddressSpaces.iterator().next().getNamespace().equals(namespace)) {
             return;
         }
-        Set<String> addressSpaceIds = desiredAddressSpaces.stream().map(AddressSpace::getName).collect(Collectors.toSet());
+        Set<NamespaceInfo> actual = kubernetes.listAddressSpaces();
+        Set<NamespaceInfo> desired = desiredAddressSpaces.stream()
+                .map(space -> new NamespaceInfo(space.getName(), space.getNamespace(), space.getCreatedBy()))
+                .collect(Collectors.toSet());
 
-        Map<String, String> labels = new LinkedHashMap<>();
-        labels.put(LabelKeys.APP, "enmasse");
-        labels.put(LabelKeys.TYPE, "address-space");
-        for (Namespace namespace : kubernetes.listNamespaces(labels)) {
-            String id = namespace.getMetadata().getAnnotations().get(AnnotationKeys.ADDRESS_SPACE);
-            if (!addressSpaceIds.contains(id)) {
-                try {
-                    log.info("Deleting address space {}", id);
-                    kubernetes.deleteNamespace(namespace.getMetadata().getName());
-                } catch(KubernetesClientException e){
-                    log.info("Exception when deleting namespace (may already be in progress): " + e.getMessage());
-                }
+        actual.removeAll(desired);
+
+        for (NamespaceInfo toRemove : actual) {
+            try {
+                log.info("Deleting address space {}", toRemove);
+                kubernetes.deleteNamespace(toRemove);
+                eventLogger.log(AddressSpaceDeleted, "Deleted address space", Normal, ControllerKind.AddressSpace, toRemove.getAddressSpace());
+            } catch (KubernetesClientException e) {
+                eventLogger.log(AddressSpaceDeleteFailed, e.getMessage(), Warning, ControllerKind.AddressSpace, toRemove.getAddressSpace());
+                log.info("Exception when deleting namespace (may already be in progress): " + e.getMessage());
             }
         }
     }

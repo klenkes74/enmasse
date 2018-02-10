@@ -35,26 +35,33 @@ public class ResourceController<T> implements io.fabric8.kubernetes.client.Watch
     private Watch watch;
     private final Resource<T> resource;
     private final Watcher<T> changeHandler;
-    private final Thread watcherThread;
+    private Thread watcherThread;
     private final BlockingQueue<Action> events = new LinkedBlockingDeque<>();
     private volatile boolean running;
     private final Supplier<Long> resyncSupplier;
+    private final boolean useEventLoop;
 
-    ResourceController(Resource<T> resource, Watcher<T> changeHandler, Supplier<Long> resyncSupplier) {
+    ResourceController(Resource<T> resource, Watcher<T> changeHandler, Supplier<Long> resyncSupplier, boolean useEventLoop) {
         this.resource = resource;
         this.changeHandler = changeHandler;
-        this.watcherThread = new Thread(this);
         this.resyncSupplier = resyncSupplier;
+        this.useEventLoop = useEventLoop;
     }
 
     public static <T> ResourceController<T> create(Resource<T> resource, Watcher<T> changeHandler) {
         Random random = new Random(System.currentTimeMillis());
-        return new ResourceController<>(resource, changeHandler, () -> 10000 + Math.abs(random.nextLong()) % 5000);
+        return new ResourceController<>(resource, changeHandler, () -> 10000 + Math.abs(random.nextLong()) % 5000, true);
+    }
+
+    public static <T> ResourceController<T> create(Resource<T> resource, Watcher<T> changeHandler, boolean useEventLoop) {
+        Random random = new Random(System.currentTimeMillis());
+        return new ResourceController<>(resource, changeHandler, () -> 10000 + Math.abs(random.nextLong()) % 5000, false);
     }
 
     public void start() {
         running = true;
         events.add(Action.ADDED);
+        watcherThread = new Thread(this);
         watcherThread.start();
     }
 
@@ -62,15 +69,21 @@ public class ResourceController<T> implements io.fabric8.kubernetes.client.Watch
     public void run() {
         while (running) {
             try {
-                if (watch == null) {
-                    watch = resource.watchResources(this);
+                if (useEventLoop) {
+                    if (watch == null) {
+                        watch = resource.watchResources(this);
+                    }
+                    events.poll(resyncSupplier.get(), TimeUnit.MILLISECONDS);
+                } else {
+                    Thread.sleep(resyncSupplier.get());
                 }
-                Action action = events.poll(resyncSupplier.get(), TimeUnit.MILLISECONDS);
 
                 if (running) {
                     // TODO: Use action and resource instead of relisting
                     changeHandler.resourcesUpdated(resource.listResources());
                 }
+            } catch (InterruptedException e) {
+                Thread.interrupted();
             } catch (Exception e) {
                 log.warn("Exception doing resource update", e);
             }
@@ -79,15 +92,22 @@ public class ResourceController<T> implements io.fabric8.kubernetes.client.Watch
 
     public void stop() {
         running = false;
-        if (watch != null) {
-            watch.close();
-        }
         try {
-            log.debug("Putting poison pill event");
-            events.put(Action.ERROR);
+            if (useEventLoop) {
+                log.debug("Putting poison pill event");
+                if (watch != null) {
+                    watch.close();
+                }
+                events.put(Action.ERROR);
+            } else {
+                watcherThread.interrupt();
+            }
+
             watcherThread.join();
+            watcherThread = null;
             watch = null;
         } catch (InterruptedException ignored) {
+            log.warn("Interrupted while stopping", ignored);
         }
     }
 

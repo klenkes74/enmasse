@@ -5,53 +5,38 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
+import static org.mockito.Mockito.mock;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import io.enmasse.address.model.Address;
-import io.vertx.core.Vertx;
-import org.junit.After;
+import io.fabric8.kubernetes.client.KubernetesClient;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.internal.util.collections.Sets;
 
 public class ConfigServiceClientTest {
-    private Vertx vertx;
-    private TestConfigServ testConfigServ;
     private ConfigServiceClient client;
     private TestListener listener;
 
     @Before
     public void setup() throws Exception {
-        vertx = Vertx.vertx();
-        testConfigServ = new TestConfigServ(0);
         listener = new TestListener();
-        TestUtils.deployVerticle(vertx, testConfigServ);
-        int configPort = TestUtils.waitForPort(() -> testConfigServ.getPort(), 1, TimeUnit.MINUTES);
+        KubernetesClient kubeClient = mock(KubernetesClient.class);
 
-        client = new ConfigServiceClient("localhost", configPort, listener, null);
-        TestUtils.deployVerticle(vertx, client);
-
-    }
-
-    @After
-    public void teardown() throws InterruptedException {
-        vertx.close();
+        client = new ConfigServiceClient(listener, kubeClient, "default");
     }
 
     @Test
     public void testClientUpdatesListener() throws Exception {
         assertNull(listener.addressMap);
-        testConfigServ.deployConfig("{\"apiVersion\": \"enmasse.io/v1\", \"kind\": \"AddressList\", \"items\": [" +
-            "{ \"apiVersion\": \"enmasse.io/v1\", \"kind\": \"Address\", \"metadata\": { \"name\": \"queue1\" }, \"spec\": { \"address\": \"queue1\", \"type\": \"queue\", \"plan\": \"pooled-inmemory\" } }," +
-            "{ \"apiVersion\": \"enmasse.io/v1\", \"kind\": \"Address\", \"metadata\": { \"name\": \"queue2\" }, \"spec\": { \"address\": \"queue2\", \"type\": \"queue\", \"plan\": \"pooled-inmemory\" } }," +
-            "{ \"apiVersion\": \"enmasse.io/v1\", \"kind\": \"Address\", \"metadata\": { \"name\": \"queue3\" }, \"spec\": { \"address\": \"queue3\", \"type\": \"queue\", \"plan\": \"inmemory\" } }," +
-            "{ \"apiVersion\": \"enmasse.io/v1\", \"kind\": \"Address\", \"metadata\": { \"name\": \"direct1\" }, \"spec\": { \"address\": \"direct1\", \"type\": \"anycast\", \"plan\": \"standard\" } }" +
-            "]}");
-
-        TestUtils.waitForPort(() -> listener.addressMap == null ? 0 : 1, 1, TimeUnit.MINUTES);
+        client.resourcesUpdated(Sets.newSet(
+                createAddress("queue1", "queue", "pooled-inmemory"),
+                createAddress("queue2", "queue", "pooled-inmemory"),
+                createAddress("queue3", "queue", "inmemory"),
+                createAddress("direct1", "anycast", "standard")));
 
         assertNotNull(listener.addressMap);
         assertThat(listener.addressMap.size(), is(2));
@@ -60,6 +45,14 @@ public class ConfigServiceClientTest {
         assertThat(listener.addressMap.get("pooled-inmemory"), hasItem("queue1"));
         assertThat(listener.addressMap.get("pooled-inmemory"), hasItem("queue2"));
         assertThat(listener.addressMap.get("queue3"), hasItem("queue3"));
+    }
+
+    private Address createAddress(String name, String type, String planName) {
+        return new Address.Builder()
+                .setName(name)
+                .setType(type)
+                .setPlan(planName)
+                .build();
     }
 
     private static class TestListener implements ConfigListener {

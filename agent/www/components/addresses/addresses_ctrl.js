@@ -1,5 +1,6 @@
 angular.module('patternfly.toolbars').controller('ViewCtrl', ['$scope', '$timeout', '$sce', '$templateCache', 'pfViewUtils', 'address_service',
     function ($scope, $timeout, $sce, $templateCache, pfViewUtils, address_service) {
+        $scope.admin_disabled = address_service.admin_disabled;
         $scope.get_stored_chart_config = function (address) {
             var chart = get_donut_chart(address, 'shard_depth_chart', 'Stored', get_tooltip_for_shard(address));
             if (address.shards) {
@@ -125,6 +126,7 @@ angular.module('patternfly.toolbars').controller('ViewCtrl', ['$scope', '$timeou
           if (reason.split('_')[0] !== 'address') {
             return
           }
+            $scope.admin_disabled = address_service.admin_disabled;
           $scope.items.forEach( function (item) {
             if (item.senders + item.receivers > 0) {
               if (!item.ingress_outcomes_link_table) {
@@ -165,15 +167,7 @@ angular.module('patternfly.toolbars').controller('ViewCtrl', ['$scope', '$timeou
           if (filter.id === 'address') {
               match = item.address.match(filter.value) !== null;
           } else if (filter.id === 'type') {
-              if (filter.value === 'queue') {
-                  match = item.store_and_forward && !item.multicast;
-              } else if (filter.value === 'topic') {
-                  match = item.store_and_forward && item.multicast;
-              } else if (filter.value === 'multicast') {
-                  match = !item.store_and_forward && item.multicast;
-              } else if (filter.value === 'anycast') {
-                  match = !item.store_and_forward && !item.multicast;
-              }
+              match = item.type.match(filter.value) !== null;
           }
           return match;
         };
@@ -279,8 +273,12 @@ angular.module('patternfly.toolbars').controller('ViewCtrl', ['$scope', '$timeou
           $scope.actionsText = action.name + "\n" + $scope.actionsText;
         };
 
-          $scope.delete_address = function (action) {
-              address_service.delete_selected();
+        $scope.delete_address = function (action) {
+            if ($scope.admin_disabled) {
+              window.alert('Delete disabled!');
+            } else {
+                address_service.delete_selected();
+            }
           };
           var suspend_address = function (action) {
               window.alert('Suspending not yet implemented!');
@@ -289,16 +287,18 @@ angular.module('patternfly.toolbars').controller('ViewCtrl', ['$scope', '$timeou
               window.alert('Purging not yet implemented!');
           };
 
-          $scope.actionsConfig = {
+        $scope.actionsConfig = {
           moreActions: [
               {
                   name: 'Suspend',
                   title: 'Suspend address',
+                  isDisabled: true,
                   actionFn: suspend_address
               },
               {
                   name: 'Purge',
                   title: 'Purge stored messages',
+                  isDisabled: true,
                   actionFn: purge_address
               }
           ],
@@ -388,11 +388,18 @@ angular.module('patternfly.wizard').controller('WizardController', ['$scope', '$
             };
 
             $scope.updateName = function() {
-                $scope.semantics_complete = angular.isDefined($scope.data.address) && $scope.data.address.length > 0 && address_service.is_unique_name($scope.data.address);
+                $scope.semantics_complete = angular.isDefined($scope.data.address) && $scope.data.address.length > 0 && address_service.is_unique_name($scope.data.address)
+                    && $scope.data.type.length > 0;
             };
             $scope.nextButtonTitle = "Next >";
 
             $scope.tooltip = address_service.tooltip
+            var space = address_service.tooltip[address_service.address_space_type];
+            if (space) {
+                for (var key in space.address) {
+                    $scope.tooltip.address[key] = space.address[key];
+                }
+            }
             $scope.getTooltip = function (addr) {
               return $scope.tooltip.address[addr].longDescription
             }

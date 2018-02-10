@@ -1,75 +1,46 @@
 #!/bin/bash
+CURDIR=`readlink -f \`dirname $0\``
+source ${CURDIR}/test_func.sh
+
 ENMASSE_DIR=$1
 KUBEADM=$2
-SYSTEMTESTS=$3
-TESTCASE=$4
-
-function download_enmasse() {
-    curl -0 https://dl.bintray.com/enmasse/snapshots/latest/enmasse-latest.tar.gz | tar -zx
-    D=`readlink -f enmasse-latest`
-    echo $D
-}
-
-function setup_test() {
-    export OPENSHIFT_URL=${OPENSHIFT_URL:-https://localhost:8443}
-    export OPENSHIFT_USER=${OPENSHIFT_USER:-test}
-    export OPENSHIFT_PASSWD=${OPENSHIFT_PASSWD:-test}
-    export OPENSHIFT_PROJECT=${OPENSHIFT_PROJECT:-enmasseci}
-    export OPENSHIFT_MULTITENANT=${OPENSHIFT_MULTITENANT:-true}
-    export OPENSHIFT_TEST_LOGDIR=${OPENSHIFT_TEST_LOGDIR:-/tmp/testlogs}
-    export OPENSHIFT_USE_TLS=${OPENSHIFT_USE_TLS:-true}
-    export ARTIFACTS_DIR=${ARTIFACTS_DIR:-artifacts}
-    export CURDIR=`readlink -f \`dirname $0\``
-    export DEFAULT_AUTHSERVICE=standard
-
-    oc login -u ${OPENSHIFT_USER} -p ${OPENSHIFT_PASSWD} --insecure-skip-tls-verify=true ${OPENSHIFT_URL}
-    oc project ${OPENSHIFT_PROJECT}
-
-    export OPENSHIFT_TOKEN=`oc whoami -t`
-    rm -rf $OPENSHIFT_TEST_LOGDIR
-    mkdir -p $OPENSHIFT_TEST_LOGDIR
-
-    DEPLOY_ARGS=( "-y" "-n" "$OPENSHIFT_PROJECT" "-u" "$OPENSHIFT_USER" "-m" "$OPENSHIFT_URL" "-a" "none standard" )
-    if [ "$OPENSHIFT_MULTITENANT" == true ]; then
-        DEPLOY_ARGS+=( "-o" "multi" )
-    fi
-
-    $ENMASSE_DIR/deploy-openshift.sh "${DEPLOY_ARGS[@]}"
-
-    if [ "$OPENSHIFT_MULTITENANT" == "true" ]; then
-        oc adm --config $KUBEADM policy add-cluster-role-to-user cluster-admin system:serviceaccount:$(oc project -q):enmasse-service-account
-        oc adm --config $KUBEADM policy add-cluster-role-to-user cluster-admin $OPENSHIFT_USER
-    fi
-}
-
-function run_test() {
-    if [ "$OPENSHIFT_MULTITENANT" == false ]; then
-        $CURDIR/wait_until_up.sh 9 || return 1
-    else
-        $CURDIR/wait_until_up.sh 4 || return 1
-    fi
-    # Run a single test case
-    if [ -n "$TESTCASE" ]; then
-        EXTRA_TEST_ARGS="-Dtest=$TESTCASE"
-    fi
-    mvn test -pl systemtests -Psystemtests -Djava.net.preferIPv4Stack=true $EXTRA_TEST_ARGS
-}
-
-function teardown_test() {
-    PROJECT_NAME=$1
-    oc delete project $PROJECT_NAME
-}
-
-
+TESTCASE=${3:-"io.enmasse.**"}
+TEST_PROFILE=${4}
 failure=0
 
-setup_test
+SANITIZED_PROJECT=$OPENSHIFT_PROJECT
+SANITIZED_PROJECT=${SANITIZED_PROJECT//_/-}
+SANITIZED_PROJECT=${SANITIZED_PROJECT//\//-}
+export OPENSHIFT_PROJECT=$SANITIZED_PROJECT
 
-run_test || failure=$(($failure + 1))
+setup_test ${ENMASSE_DIR} ${KUBEADM}
 
-$CURDIR/collect_logs.sh $ARTIFACTS_DIR
+#environment info before tests
+LOG_DIR="${ARTIFACTS_DIR}/openshift-info/"
+mkdir -p ${LOG_DIR}
+get_kubernetes_info ${LOG_DIR} services default "-before"
+get_kubernetes_info ${LOG_DIR} pods default "-before"
 
-oc get pods
+${CURDIR}/system-stats.sh > ${ARTIFACTS_DIR}/system-resources.log &
+STATS_PID=$!
+echo "process for checking system resources is running with PID: ${STATS_PID}"
+
+if [ "${TEST_PROFILE}" = "systemtests-marathon" ]; then
+    run_test ${TESTCASE} ${TEST_PROFILE} || failure=$(($failure + 1))
+else
+    run_test ${TESTCASE} systemtests-shared || failure=$(($failure + 1))
+    run_test ${TESTCASE} systemtests-isolated || failure=$(($failure + 1))
+fi
+
+
+echo "process for checking system resources with PID: ${STATS_PID} will be killed"
+kill ${STATS_PID}
+
+#environment info after tests
+${CURDIR}/store_kubernetes_info.sh ${LOG_DIR} ${OPENSHIFT_PROJECT}
+
+#store artifacts
+${CURDIR}/collect_logs.sh ${ARTIFACTS_DIR}
 
 if [ $failure -gt 0 ]
 then
@@ -77,5 +48,5 @@ then
     oc get events
     exit 1
 else
-    teardown_test $OPENSHIFT_PROJECT
+    teardown_test ${OPENSHIFT_PROJECT}
 fi

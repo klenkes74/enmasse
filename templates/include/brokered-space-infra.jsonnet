@@ -1,8 +1,9 @@
 local common = import "common.jsonnet";
+local roles = import "roles.jsonnet";
 local images = import "images.jsonnet";
 local admin = import "admin.jsonnet";
 local auth_service = import "auth-service.jsonnet";
-local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
+local prometheus = import "prometheus.jsonnet";
 
 {
 
@@ -58,7 +59,35 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
           "name": "amqps",
           "port": 5671,
           "targetPort": "amqps"
-        },
+        }
+      ],
+      "selector": {
+        "role": "broker"
+      }
+    }
+  },
+
+  broker_console_service::
+  {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "labels": {
+        "app": "enmasse"
+      },
+      "annotations": {
+        "addressSpace": "${ADDRESS_SPACE}",
+        "io.enmasse.endpointPort": "console"
+      },
+      "name": "brokerconsole"
+    },
+    "spec": {
+      "ports": [
+        {
+          "name": "console",
+          "port": 8161,
+          "targetPort": "jolokia"
+        }
       ],
       "selector": {
         "role": "broker"
@@ -97,7 +126,8 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
     "metadata": {
       "name": name,
       "labels": {
-        "app": "enmasse"
+        "app": "enmasse",
+        "role": "broker"
       },
       "annotations": {
         "addressSpace": "${ADDRESS_SPACE}",
@@ -114,13 +144,16 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
             "name": name
           },
           "annotations": {
-            "addressSpace": "${ADDRESS_SPACE}"
+            "addressSpace": "${ADDRESS_SPACE}",
+            "prometheus.io/scrape": "true",
+            "prometheus.io/path": "/metrics",
+            "prometheus.io/port": "8080"
           }
         },
         "spec": {
           "volumes": [
             common.persistent_volume("data", "broker-data"),
-            common.configmap_volume("hawkular-openshift-agent", "hawkular-broker-config"),
+            common.configmap_volume("broker-prometheus-config", "broker-prometheus-config"),
             common.secret_volume("broker-internal-cert", "broker-internal-cert"),
             common.secret_volume("authservice-ca", "authservice-ca"),
             common.secret_volume("external-cert", "${MESSAGING_SECRET}"),
@@ -137,16 +170,18 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
                 common.volume_mount("data", "/var/run/artemis"),
                 common.volume_mount("broker-internal-cert", "/etc/enmasse-certs", true),
                 common.volume_mount("external-cert", "/etc/external-certs", true),
-                common.volume_mount("authservice-ca", "/etc/authservice-ca", true)
+                common.volume_mount("authservice-ca", "/etc/authservice-ca", true),
+                common.volume_mount("broker-prometheus-config", "/etc/prometheus-config", true)
               ],
               "ports": [
                 common.container_port("amqp", 5672),
                 common.container_port("amqps", 5671),
                 common.container_port("amqps-normal", 55671),
-                common.container_port("jolokia", 8161)
+                common.container_port("jolokia", 8161),
+                common.container_port("artemismetrics", 8080)
               ],
-              "livenessProbe": common.tcp_probe("amqp", 120),
-              "readinessProbe": common.tcp_probe("amqp", 0),
+              "livenessProbe": common.exec_probe(["sh", "-c", "$ARTEMIS_HOME/bin/probe.sh"], 120),
+              "readinessProbe": common.exec_probe(["sh", "-c", "$ARTEMIS_HOME/bin/probe.sh"], 10),
             }
           ]
         }
@@ -161,7 +196,8 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
     "metadata": {
       "name": name,
       "labels": {
-        "app": "enmasse"
+        "app": "enmasse",
+        "role": "agent"
       },
       "annotations": {
         "addressSpace": "${ADDRESS_SPACE}",
@@ -182,9 +218,13 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
           }
         },
         "spec": {
+          "serviceAccount": "${ADDRESS_SPACE_ADMIN_SA}",
           "volumes": [
             common.secret_volume("authservice-ca", "authservice-ca"),
-            common.secret_volume("agent-internal-cert", "agent-internal-cert")
+            common.secret_volume("console-external-cert", "${CONSOLE_SECRET}"),
+            common.secret_volume("agent-internal-cert", "agent-internal-cert"),
+            common.secret_volume("address-controller-ca", "address-controller-ca"),
+            common.secret_volume("messaging-cert", "external-certs-messaging")
           ],
           "containers": [
             {
@@ -195,26 +235,22 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
                 common.env("ADDRESS_SPACE_TYPE", "brokered"),
                 common.env("ADDRESS_SPACE_SERVICE_HOST", "${ADDRESS_SPACE_SERVICE_HOST}"),
                 common.env("CERT_DIR", "/etc/enmasse-certs"),
+                common.env("CONSOLE_CERT_DIR", "/etc/console-certs"),
+                common.env("ADDRESS_CONTROLLER_CA", "/opt/agent/address-controller-ca/tls.crt"),
+                common.env("MESSAGING_CERT", "/opt/agent/messaging-cert/tls.crt"),
               ] + auth_service.envVars,
               "volumeMounts": [
                 common.volume_mount("authservice-ca", "/opt/agent/authservice-ca", true),
-                common.volume_mount("agent-internal-cert", "/etc/enmasse-certs", true)
+                common.volume_mount("console-external-cert", "/etc/console-certs", true),
+                common.volume_mount("agent-internal-cert", "/etc/enmasse-certs", true),
+                common.volume_mount("address-controller-ca", "/opt/agent/address-controller-ca", true),
+                common.volume_mount("messaging-cert", "/opt/agent/messaging-cert", true)
               ],
               "ports": [
-                common.container_port("http", 8080)
+                common.container_port("https", 8080)
               ],
-              "livenessProbe": {
-                "httpGet": {
-                  "path": "/probe",
-                  "port": "http"
-                }
-              },
-              "readinessProbe": {
-                "httpGet": {
-                  "path": "/probe",
-                  "port": "http"
-                }
-              }
+              "livenessProbe": common.http_probe("https", "/probe", "HTTPS"),
+              "readinessProbe": common.http_probe("https", "/probe", "HTTPS")
             }
           ]
         }
@@ -232,16 +268,16 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
       },
       "annotations": {
         "addressSpace": "${ADDRESS_SPACE}",
-        "io.enmasse.endpointPort": "http"
+        "io.enmasse.endpointPort": "https"
       },
       "name": "console"
     },
     "spec": {
       "ports": [
         {
-          "name": "http",
-          "port": 8080,
-          "targetPort": "http"
+          "name": "https",
+          "port": 8081,
+          "targetPort": 8080
         }
       ],
       "selector": {
@@ -263,8 +299,7 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
     "objects": [
       common.ca_secret("authservice-ca", "${AUTHENTICATION_SERVICE_CA_CERT}"),
       common.ca_secret("address-controller-ca", "${ADDRESS_CONTROLLER_CA_CERT}"),
-      admin.password_secret("address-space-credentials", "${ADDRESS_SPACE_PASSWORD}"),
-      hawkularBrokerConfig,
+      prometheus.brokered_broker_config("broker-prometheus-config"),
       me.pvc("broker-data"),
       me.broker_deployment("broker"),
       me.broker_service,
@@ -304,6 +339,11 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
         "required": true
       },
       {
+        "name": "CONSOLE_SECRET",
+        "description": "Certificate to be used for public console service",
+        "required": true
+      },
+      {
         "name": "AUTHENTICATION_SERVICE_HOST",
         "description": "The hostname of the authentication service used by this address space",
         "required": true
@@ -316,6 +356,7 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
       {
         "name": "AUTHENTICATION_SERVICE_CA_CERT",
         "description": "The CA cert to use for validating authentication service cert",
+        "required": true
       },
       {
         "name": "AUTHENTICATION_SERVICE_CLIENT_SECRET",
@@ -330,9 +371,10 @@ local hawkularBrokerConfig = import "hawkular-broker-config.jsonnet";
         "description": "The CA cert to use for validating address controller identity"
       },
       {
-        "name": "ADDRESS_SPACE_PASSWORD",
-        "description": "Password for authenticating against address controller"
-      },
+        "name": "ADDRESS_SPACE_ADMIN_SA",
+        "description": "The service account with address space admin privileges",
+        "value": "address-space-admin"
+      }
     ],
   }
 }

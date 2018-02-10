@@ -20,6 +20,8 @@ var events = require('events');
 var util = require('util');
 var rhea = require('rhea');
 var RouterStats = require('../lib/router_stats.js');
+var AddressList = require('../lib/address_list.js');
+var Registry = require('../lib/registry.js');
 
 function NameGenerator (base, separator) {
     this.base = base;
@@ -54,6 +56,7 @@ StatsBuilder.prototype.connection = function (details) {
     var name = this.conn_names.next();
     var attributes = details || {};
     if (attributes.role === undefined) attributes.role = 'normal';
+    if (attributes.identity === undefined) attributes.identity = name;
     this.router.create_object('org.apache.qpid.dispatch.connection', name, attributes);
     return new DummyConn(name, this);
 };
@@ -85,6 +88,12 @@ StatsBuilder.prototype.queue = function (name, messages_in, messages_out, detail
     this.router.create_object('org.apache.qpid.dispatch.router.address', 'M1' + name, attributes_1);
 };
 
+StatsBuilder.prototype.topic = function (name) {
+    for (var dir in {'in':'in', 'out':'out'}) {
+        this.router.create_object('org.apache.qpid.dispatch.router.config.linkRoute', name+'-'+dir, {prefix:name, dir:dir});
+    }
+};
+
 var router_names = new NameGenerator('router');
 
 function MockRouter (name) {
@@ -109,8 +118,8 @@ function MockRouter (name) {
 util.inherits(MockRouter, events.EventEmitter);
 
 function match_source_address(link, address) {
-    return link && link.local && link.local.attach && link.local.attach.source
-        && link.local.attach.source.address === address;
+   return link && link.local && link.local.attach && link.local.attach.source
+        && link.local.attach.source.value[0].toString() === address;
 }
 
 MockRouter.prototype.add_node = function (router) {
@@ -360,7 +369,7 @@ describe('router stats', function() {
             done();
         });
     });
-    it('retrieves stats for a queue from a single router', function(done) {
+    it('retrieves stats for a queue from multiple routers', function(done) {
         add_router_nodes(2);
         //populate router:
         router.populate.queue('foo', 64, 46);
@@ -388,6 +397,96 @@ describe('router stats', function() {
             assert.equal(results.addresses.foo.messages_in, 90);
             assert.equal(results.addresses.foo.messages_out, 55);
             done();
+        });
+    });
+    it('retrieves propagation for a topic from a single router', function(done) {
+        //populate router:
+        router.populate.topic('bar');
+        //retrieve stats:
+        router_stats._retrieve().then(function(results) {
+            assert.equal(results.addresses.bar.propagated, 100);
+            done();
+        });
+    });
+    it('retrieves sender and receiver stats for a topic from a single router', function(done) {
+        //populate router:
+        router.populate.topic('bar');
+        for (var i = 0; i < 10; i++) {
+            var c = router.populate.connection();
+            c.receiver('bar');
+            c.receiver('bar');
+            c.sender('bar');
+            var c2 = router.populate.connection({role:'route-container'});
+            c2.receiver('bar');
+            c2.sender('bar');
+        }
+        //retrieve stats:
+        router_stats._retrieve().then(function(results) {
+            assert.equal(results.addresses.bar.senders, 10);
+            assert.equal(results.addresses.bar.receivers, 20);
+            done();
+        }).catch(function (error) {
+            done(error);
+        });
+    });
+    it('updates registries with stats for a queue from a single router', function(done) {
+        //populate router:
+        router.populate.queue('foo', 64, 46);
+        //create some fake connection- and link- stats:
+        var c = router.populate.connection();
+        for (var i = 0; i < 2; i++) {
+            c.sender('foo');
+            c.receiver('foo');
+        }
+
+        //retrieve stats:
+        var connections = new Registry();
+        var addresses = new AddressList();
+        addresses.set({foo:{address:'foo'}});
+        router_stats.retrieve(addresses, connections).then(function() {
+            assert.equal(addresses.get('foo').senders, 2);
+            assert.equal(addresses.get('foo').receivers, 2);
+            assert.equal(addresses.get('foo').messages_in, 64);
+            assert.equal(addresses.get('foo').messages_out, 46);
+            done();
+        });
+    });
+    it('retrieves stats for a queue from a changing set of routers', function(done) {
+        //populate router:
+        router.populate.queue('foo', 64, 46);
+        //create some fake connection- and link- stats:
+        var c = router.populate.connection();
+        for (var i = 0; i < 2; i++) {
+            c.sender('foo');
+            c.receiver('foo');
+        }
+
+        //retrieve stats:
+        router_stats._retrieve().then(function(results) {
+            assert.equal(results.addresses.foo.senders, 2);
+            assert.equal(results.addresses.foo.receivers, 2);
+            assert.equal(results.addresses.foo.messages_in, 64);
+            assert.equal(results.addresses.foo.messages_out, 46);
+            add_router_nodes(2);
+            extra_nodes[0].populate.queue('foo', 6, 4);
+            extra_nodes[1].populate.queue('foo', 20, 5);
+            for (var i = 0; i < 3; i++) {
+                extra_nodes[0].populate.connection().sender('foo');
+            }
+            var c2 = extra_nodes[1].populate.connection();
+            for (var i = 0; i < 3; i++) {
+                c2.receiver('foo');
+            }
+            c2.sender('foo');
+
+            //retrieve stats:
+            router_stats._retrieve().then(function(results) {
+                assert.equal(results.addresses.foo.senders, 6);
+                assert.equal(results.addresses.foo.receivers, 5);
+                assert.equal(results.addresses.foo.messages_in, 90);
+                assert.equal(results.addresses.foo.messages_out, 55);
+                done();
+            });
         });
     });
 });

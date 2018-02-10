@@ -17,7 +17,7 @@
 
 var fs = require("fs");
 
-var AddressCtrl = function (host, port, ca, auth_string) {
+var AddressCtrl = function (host, port, ca, auth_string, rejectUnauthorized) {
     this.host = host;
     this.port = port;
     this.address_space = process.env.ADDRESS_SPACE
@@ -25,10 +25,11 @@ var AddressCtrl = function (host, port, ca, auth_string) {
     this.ca = ca;
     this.auth_string = auth_string;
 
-    this.addr_path = "/v1/addresses/";
+    this.addr_path = "/apis/enmasse.io/v1/addresses/";
     if (this.address_space) {
         this.addr_path += this.address_space + "/";
     }
+    this.rejectUnauthorized = rejectUnauthorized;
 }
 
 AddressCtrl.prototype.request = function (addr_path, method, headers, body, handler) {
@@ -41,6 +42,7 @@ AddressCtrl.prototype.request = function (addr_path, method, headers, body, hand
         options.path = addr_path;
         options.method = method || 'GET';
         options.headers = headers || {};
+        if (self.rejectUnauthorized !== undefined) options.rejectUnauthorized = self.rejectUnauthorized;
 
         if (self.auth_string) {
             options.headers['Authorization'] = self.auth_string
@@ -81,13 +83,10 @@ AddressCtrl.prototype.request = function (addr_path, method, headers, body, hand
                 });
             }
         });
-        req.on('error', function(e) {
-            console.error('Error: ' + e.message + ' for ' + options.method + ' on ' + options.path);
-            reject(e);
-        });
         if (body) {
             req.write(body);
         }
+        req.on('error', function (error) { reject(error); });
         req.end();
     });
 }
@@ -113,7 +112,7 @@ AddressCtrl.prototype.create_address = function (address) {
 }
 
 AddressCtrl.prototype.delete_address = function(address) {
-    return this.request(this.addr_path + address.address, 'DELETE');
+    return this.request(this.addr_path + encodeURIComponent(address.address), 'DELETE');
 }
 
 function index(list) {
@@ -131,30 +130,30 @@ function address_types(text) {
 }
 
 AddressCtrl.prototype.get_address_types = function () {
-    return this.request('/v1/schema/', 'GET', undefined, undefined, address_types);
+    return this.request('/apis/enmasse.io/v1/schema/', 'GET', undefined, undefined, address_types);
 }
 
 module.exports.create = function (env) {
     var host = 'localhost';
-    var port = 8080;
+    var port;
+    var rejectUnauthorized;
     if (env.ADDRESS_SPACE_SERVICE_HOST) {
         host = env.ADDRESS_SPACE_SERVICE_HOST;
     } else if (env.ADDRESS_CONTROLLER_SERVICE_HOST) {
         host = env.ADDRESS_CONTROLLER_SERVICE_HOST;
-        if (env.ADDRESS_CONTROLLER_SERVICE_PORT_HTTPS) {
-            port = env.ADDRESS_CONTROLLER_SERVICE_PORT_HTTPS;
-        }
+        rejectUnauthorized = false;
+    }
+    if (env.ADDRESS_CONTROLLER_SERVICE_HOST && env.ADDRESS_CONTROLLER_SERVICE_PORT_HTTPS) {
+        port = env.ADDRESS_CONTROLLER_SERVICE_PORT_HTTPS;
     }
     var ca = undefined;
     if (env.ADDRESS_CONTROLLER_CA) {
         ca = fs.readFileSync(env.ADDRESS_CONTROLLER_CA);
-        port = 8081;
+        if (port === undefined) port = 443;
     }
+    if (port === undefined) port = 8080;
 
-    var auth_string = undefined;
-    if (env.ADDRESS_SPACE_PASSWORD_FILE) {
-        auth_string = 'Basic ' + new Buffer(env.ADDRESS_SPACE + ":" + fs.readFileSync(env.ADDRESS_SPACE_PASSWORD_FILE)).toString('base64');
-    }
+    var auth_string = 'Bearer ' + (env.KUBERNETES_TOKEN || fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token'));
 
-    return new AddressCtrl(host, port, ca, auth_string);
+    return new AddressCtrl(host, port, ca, auth_string, rejectUnauthorized);
 };

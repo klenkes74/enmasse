@@ -7,12 +7,12 @@ kubernetes cluster, TLS must be used with SNI set to specify the fully
 qualified hostname for the address-space. The port used is 443.
 
 The messaging protocols supported depends on the type of the
-address-space. At present AMQP and MQTT are supported.
+address-space.
 
-TODO: Add information about retrieving the CA certificate and using
-that in the client examples.
+//TODO: Add information about retrieving the CA certificate and using
+//that in the client examples.
 
-TODO: Add information about authentication.
+//TODO: Add information about authentication.
 
 === Client Examples
 Simple examples are shown here for the following clients:
@@ -26,7 +26,7 @@ Simple examples are shown here for the following clients:
 These all assume you have created an address of type 'queue' named
 'myqueue'.
 
-TODO: add links for all these clients
+//TODO: add links for all these clients
 
 ==== {ClientAmqpPythonName}
 
@@ -56,7 +56,7 @@ class HelloWorld(MessagingHandler):
         print(event.message.body)
         event.connection.close()
 
-Container(HelloWorld("amqps://messaging-enmasse-1504862365.10.19.44.61.nip.io:443", "myqueue")).run()
+Container(HelloWorld("amqps://<messaging-route-hostname>:443", "myqueue")).run()
 ----
 
 ==== {ClientAmqpJmsName}
@@ -131,7 +131,7 @@ public class HelloWorld {
 with jndi.properties:
 [source,options="nowrap"]
 ----
-connectionfactory.myFactoryLookup = amqps://messaging-enmasse-1504862365.10.19.44.61.nip.io:443?transport.trustAll=true&transport.verifyHost=false
+connectionfactory.myFactoryLookup = amqps://<messaging-route-hostname>:443?transport.trustAll=true&transport.verifyHost=false
 queue.myQueueLookup = myqueue
 ----
 
@@ -152,7 +152,7 @@ container.on('sendable', function (context) {
     context.sender.send({body:'Hello World!'});
     context.sender.detach();
 });
-container.connect({port:443, host:messaging-enmasse-1504862365.10.19.44.61.nip.io, transport:tls, rejectUnauthorized:false});
+container.connect({port:443, host:'<messaging-route-hostname>', transport:'tls', rejectUnauthorized:false});
 ----
 
 ==== {ClientAmqpCppName}
@@ -208,7 +208,7 @@ class hello_world : public proton::messaging_handler {
 
 int main(int argc, char **argv) {
     try {
-        std::string url = argc > 1 ? argv[1] : "messaging-enmasse-1504862365.10.19.44.61.nip.io:443/myqueue";
+        std::string url = argc > 1 ? argv[1] : "<messaging-route-hostname>:443/myqueue";
 
         hello_world hw(url);
         proton::default_container(hw).run();
@@ -223,6 +223,40 @@ int main(int argc, char **argv) {
 ----
 
 ==== {ClientAmqpDotNetName}
-Need Chuck’s help with this
+[source,options="nowrap"]
+----
+using System;
+using Amqp;
+
+namespace Test
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            String url = (args.Length > 0) ? args[0] : "amqps://<messaging-route-hostname>:443";
+            String address = (args.Length > 1) ? args[1] : "myqueue";
+
+            Connection.DisableServerCertValidation = true;
+            Connection connection = new Connection(new Address(url));
+            Session session = new Session(connection);
+            SenderLink sender = new SenderLink(session, "test-sender", address);
+
+            Message messageSent = new Message("Test Message");
+            sender.Send(messageSent);
+
+            ReceiverLink receiver = new ReceiverLink(session, "test-receiver", address);
+            Message messageReceived = receiver.Receive(TimeSpan.FromSeconds(2));
+            Console.WriteLine(messageReceived.Body);
+            receiver.Accept(messageReceived);
+
+            sender.Close();
+            receiver.Close();
+            session.Close();
+            connection.Close();
+        }
+    }
+}
+----
 
 

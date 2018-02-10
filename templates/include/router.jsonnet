@@ -15,7 +15,7 @@ local authService = import "auth-service.jsonnet";
       },
       "livenessProbe": {
         "tcpSocket": {
-          "port": "metrics"
+          "port": "routermetrics"
         },
         "initialDelaySeconds": 60
       },
@@ -35,7 +35,7 @@ local authService = import "auth-service.jsonnet";
       ],
       "ports": [
         {
-          "name": "metrics",
+          "name": "routermetrics",
           "containerPort": 8080,
           "protocol": "TCP"
         }
@@ -106,12 +106,6 @@ local authService = import "auth-service.jsonnet";
         "readOnly": true
       }],
 
-      local address_controller_ca = [{
-        "name": "address-controller-ca",
-        "mountPath": "/etc/qpid-dispatch/address-controller-ca",
-        "readOnly": true
-      }],
-
       local router_internal_cert = [{
         "name": internal_cert_volume,
         "mountPath": "/etc/enmasse-certs",
@@ -119,14 +113,6 @@ local authService = import "auth-service.jsonnet";
       }],
 
       [if mem_request != "" then "resources"]: resources,
-      "volumeMounts": ssl_certs + authservice_ca + router_internal_cert + address_controller_ca
-    },
-
-  hawkular_volume()::
-    {
-      "name": "hawkular-openshift-agent",
-      "configMap": {
-          "name": "hawkular-router-config"
-      }
+      "volumeMounts": ssl_certs + authservice_ca + router_internal_cert
     },
 }

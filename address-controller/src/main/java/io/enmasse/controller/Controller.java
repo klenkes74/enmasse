@@ -19,15 +19,15 @@ import io.enmasse.address.model.AddressSpace;
 import io.enmasse.address.model.Endpoint;
 import io.enmasse.address.model.SecretCertProvider;
 import io.enmasse.config.AnnotationKeys;
-import io.enmasse.controller.auth.UserDatabase;
-import io.enmasse.controller.common.AddressSpaceController;
+import io.enmasse.config.LabelKeys;
+import io.enmasse.controller.auth.AuthController;
 import io.enmasse.controller.common.AuthenticationServiceResolverFactory;
 import io.enmasse.controller.common.Kubernetes;
-import io.enmasse.k8s.api.AddressSpaceApi;
-import io.enmasse.k8s.api.Watch;
-import io.enmasse.k8s.api.Watcher;
+import io.enmasse.controller.common.ControllerKind;
+import io.enmasse.k8s.api.*;
 import io.fabric8.kubernetes.api.model.HasMetadata;
-import io.fabric8.kubernetes.api.model.extensions.Ingress;
+import io.fabric8.kubernetes.api.model.Service;
+import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.openshift.api.model.Route;
 import io.fabric8.openshift.client.OpenShiftClient;
 import io.vertx.core.AbstractVerticle;
@@ -39,6 +39,8 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static io.enmasse.controller.common.ControllerReason.AddressSpaceSyncFailed;
+
 /**
  * The main controller loop that monitors k8s address spaces
  */
@@ -47,21 +49,25 @@ public class Controller extends AbstractVerticle implements Watcher<AddressSpace
     private final OpenShiftClient client;
 
     private final AddressSpaceApi addressSpaceApi;
+
     private Watch watch;
 
-    private final List<AddressSpaceController> addressSpaceControllers;
     private final ControllerHelper helper;
+    private final EventLogger eventLogger;
+    private final AuthController authController;
 
     public Controller(OpenShiftClient client,
                       AddressSpaceApi addressSpaceApi,
                       Kubernetes kubernetes,
                       AuthenticationServiceResolverFactory authResolverFactory,
-                      UserDatabase userDatabase,
-                      List<AddressSpaceController> addressSpaceControllers) {
-        this.helper = new ControllerHelper(kubernetes, authResolverFactory, userDatabase);
+                      EventLogger eventLogger,
+                      AuthController authController,
+                      SchemaApi schemaApi) {
+        this.helper = new ControllerHelper(kubernetes, authResolverFactory, eventLogger, schemaApi);
         this.client = client;
         this.addressSpaceApi = addressSpaceApi;
-        this.addressSpaceControllers = addressSpaceControllers;
+        this.eventLogger = eventLogger;
+        this.authController = authController;
     }
 
     @Override
@@ -108,18 +114,27 @@ public class Controller extends AbstractVerticle implements Watcher<AddressSpace
         createAddressSpaces(resources);
         retainAddressSpaces(resources);
 
-        for (AddressSpace instance : addressSpaceApi.listAddressSpaces()) {
-            AddressSpace.Builder mutableAddressSpace = new AddressSpace.Builder(instance);
-            updateReadiness(mutableAddressSpace);
-            updateEndpoints(mutableAddressSpace);
-            addressSpaceApi.replaceAddressSpace(mutableAddressSpace.build());
-        }
+        try {
+            for (AddressSpace instance : addressSpaceApi.listAddressSpaces()) {
+                AddressSpace.Builder mutableAddressSpace = new AddressSpace.Builder(instance);
+                updateReadiness(mutableAddressSpace);
+                updateEndpoints(mutableAddressSpace);
+                try {
+                    addressSpaceApi.replaceAddressSpace(mutableAddressSpace.build());
+                } catch (KubernetesClientException e) {
+                    log.warn("Error syncing address space {}", mutableAddressSpace.getName(), e);
+                    eventLogger.log(AddressSpaceSyncFailed, "Error syncing address space: " + e.getMessage(), EventLogger.Type.Warning, ControllerKind.AddressSpace, mutableAddressSpace.getName());
+                }
 
-        for (AddressSpaceController controller : addressSpaceControllers) {
-            Set<AddressSpace> filtered = resources.stream()
-                    .filter(space -> space.getType().getName().equals(controller.getAddressSpaceType().getName()))
-                    .collect(Collectors.toSet());
-            controller.resourcesUpdated(filtered);
+                if (authController != null) {
+                    authController.issueAddressSpaceCert(instance);
+                    authController.issueComponentCertificates(instance);
+                    authController.issueExternalCertificates(instance);
+                }
+            }
+        } catch (Exception e) {
+            eventLogger.log(AddressSpaceSyncFailed, "Error syncing address space: " + e.getMessage(), EventLogger.Type.Warning, ControllerKind.Controller, "enmasse-controller");
+            throw e;
         }
     }
 
@@ -139,16 +154,16 @@ public class Controller extends AbstractVerticle implements Watcher<AddressSpace
         annotations.put(AnnotationKeys.ADDRESS_SPACE, builder.getName());
 
         List<Endpoint> endpoints;
-        /* Watch for routes and ingress */
+        /* Watch for routes and lb services */
         if (client.isAdaptable(OpenShiftClient.class)) {
             endpoints = client.routes().inNamespace(builder.getNamespace()).list().getItems().stream()
                     .filter(route -> isPartOfAddressSpace(builder.getName(), route))
                     .map(this::routeToEndpoint)
                     .collect(Collectors.toList());
         } else {
-            endpoints = client.extensions().ingresses().inNamespace(builder.getNamespace()).list().getItems().stream()
-                    .filter(ingress -> isPartOfAddressSpace(builder.getName(), ingress))
-                    .map(this::ingressToEndpoint)
+            endpoints = client.services().inNamespace(builder.getNamespace()).withLabel(LabelKeys.TYPE, "loadbalancer").list().getItems().stream()
+                    .filter(service -> isPartOfAddressSpace(builder.getName(), service))
+                    .map(this::serviceToEndpoint)
                     .collect(Collectors.toList());
         }
 
@@ -165,6 +180,7 @@ public class Controller extends AbstractVerticle implements Watcher<AddressSpace
         Endpoint.Builder builder = new Endpoint.Builder()
                 .setName(route.getMetadata().getName())
                 .setHost(route.getSpec().getHost())
+                .setPort(443)
                 .setService(route.getSpec().getTo().getName());
 
         if (secretName != null) {
@@ -174,17 +190,25 @@ public class Controller extends AbstractVerticle implements Watcher<AddressSpace
         return builder.build();
     }
 
-    private Endpoint ingressToEndpoint(Ingress ingress) {
-        String secretName = ingress.getMetadata().getAnnotations().get(AnnotationKeys.CERT_SECRET_NAME);
+    private Endpoint serviceToEndpoint(Service service) {
+        String secretName = service.getMetadata().getAnnotations().get(AnnotationKeys.CERT_SECRET_NAME);
+        String serviceName = service.getMetadata().getAnnotations().get(AnnotationKeys.SERVICE_NAME);
         Endpoint.Builder builder = new Endpoint.Builder()
-                .setName(ingress.getMetadata().getName())
-                .setService(ingress.getSpec().getBackend().getServiceName());
+                .setName(service.getMetadata().getName())
+                .setService(serviceName);
 
         if (secretName != null) {
             builder.setCertProvider(new SecretCertProvider(secretName));
-            if (ingress.getSpec().getTls() != null && !ingress.getSpec().getTls().isEmpty() &&
-                    !ingress.getSpec().getTls().get(0).getHosts().isEmpty()) {
-                builder.setHost(ingress.getSpec().getTls().get(0).getHosts().get(0));
+        }
+
+        if (service.getSpec().getPorts().size() > 0) {
+            Integer nodePort = service.getSpec().getPorts().get(0).getNodePort();
+            Integer port = service.getSpec().getPorts().get(0).getPort();
+
+            if (nodePort != null) {
+                builder.setPort(nodePort);
+            } else if (port != null) {
+                builder.setPort(port);
             }
         }
 

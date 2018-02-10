@@ -2,19 +2,18 @@
 
 == Configuring {ProductName} using a REST API
 
-TODO: Authentication of clients
-
 {ProductName} provides a REST API that can be used for configuring address spaces and addresses
-within those address spaces.
+within those address spaces. When running {ProductName} in multitenant mode, clients are
+authenticated using https://kubernetes.io/docs/admin/authorization/rbac/[RBAC^] by default.
 
 === Creating an Address Space
 
 
-* Creating address spaces is only applicable for multi-tenant deployments of {ProductName}.
+* Creating address spaces is only applicable for multitenant deployments of {ProductName}.
 
 .Procedure
 
-To create a 'standard' address space, save the following JSON data to a file:
+. Save the following JSON data to a file 'space.json':
 +
 [source,options="nowrap"]
 ----
@@ -30,6 +29,14 @@ To create a 'standard' address space, save the following JSON data to a file:
 }
 ----
 +
+. POST the address space definition to the REST API using curl:
++
+[source,options="nowrap"]
+----
+TOKEN=`oc whoami -t`
+curl -X POST -T space.json -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -k https://$(oc get route restapi -o jsonpath='{.spec.host}')/apis/enmasse.io/v1/addressspaces
+----
++
 This will create the infrastructure required for that address space. Starting up the address space
 will take a while, usually depending on how fast it is able to download the Docker images for the
 various components.
@@ -42,7 +49,8 @@ various components.
 +
 [source,options="nowrap"]
 ----
-curl http://$(oc get route restapi -o jsonpath='{.spec.host}')/v1/addressspaces/myspace
+TOKEN=`oc whoami -t`
+curl -k -H "Authorization: Bearer $TOKEN" https://$(oc get route restapi -o jsonpath='{.spec.host}')/apis/enmasse.io/v1/addressspaces/myspace
 ----
 +
 You can consider the address space to be ready to use when `status.isReady` is `true` in the returned JSON
@@ -96,11 +104,12 @@ object.
 }
 ----
 
-. You can then create those addresses using the REST API:
+. You can then create those addresses using the following REST API command. Replace `default` with the name of your address space:
 +
 [source,options="nowrap"]
 ----
-curl -X PUT -T addresses.json -H "content-type: application/json" http://$(oc get route restapi -o jsonpath='{.spec.host}')/v1/addresses/default
+TOKEN=`oc whoami -t`
+curl -X PUT -T addresses.json -H "content-type: application/json" -H "Authorization: Bearer $TOKEN" -k https://$(oc get route restapi -o jsonpath='{.spec.host}')/apis/enmasse.io/v1/addresses/default
 ----
 
 === Viewing Configured Addresses
@@ -111,7 +120,7 @@ curl -X PUT -T addresses.json -H "content-type: application/json" http://$(oc ge
 +
 [source,options="nowrap"]
 ----
-curl http://$(oc get route restapi -o jsonpath='{.spec.host}')/v1/addresses/default
+curl -k https://$(oc get route restapi -o jsonpath='{.spec.host}')/apis/enmasse.io/v1/addresses/default
 ----
 +
 The addresses are ready to be used by messaging clients once the `status.isReady` field of each

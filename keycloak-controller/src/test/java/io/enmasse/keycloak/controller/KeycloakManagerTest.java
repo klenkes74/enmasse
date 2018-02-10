@@ -18,25 +18,26 @@ package io.enmasse.keycloak.controller;
 import io.enmasse.address.model.AddressSpace;
 import io.enmasse.address.model.AuthenticationService;
 import io.enmasse.address.model.AuthenticationServiceType;
-import io.enmasse.address.model.types.standard.StandardAddressSpaceType;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.internal.util.collections.Sets;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class KeycloakManagerTest {
     private KeycloakManager manager;
     private Set<String> realms;
+    private Map<String, String> realmAdminUsers;
 
     @Before
     public void setup() {
         realms = new HashSet<>();
+        realmAdminUsers = new HashMap<>();
         manager = new KeycloakManager(new KeycloakApi() {
             @Override
             public Set<String> getRealmNames() {
@@ -44,9 +45,9 @@ public class KeycloakManagerTest {
             }
 
             @Override
-            public void createRealm(String realmName) {
+            public void createRealm(String realmName, String realmAdminUser) {
                 realms.add(realmName);
-
+                realmAdminUsers.put(realmName, realmAdminUser);
             }
 
             @Override
@@ -68,6 +69,9 @@ public class KeycloakManagerTest {
         assertTrue(realms.contains("a2"));
         assertTrue(realms.contains("a3"));
         assertEquals(2, realms.size());
+
+        assertTrue(realmAdminUsers.get("a2").length() > 0);
+        assertTrue(realmAdminUsers.get("a3").length() > 0);
     }
 
     @Test
@@ -93,6 +97,6 @@ public class KeycloakManagerTest {
     }
 
     private AddressSpace createAddressSpace(String name, AuthenticationServiceType authType) {
-        return new AddressSpace.Builder().setName(name).setType(new StandardAddressSpaceType()).setAuthenticationService(new AuthenticationService.Builder().setType(authType).build()).build();
+        return new AddressSpace.Builder().setName(name).setType("standard").setAuthenticationService(new AuthenticationService.Builder().setType(authType).build()).build();
     }
 }

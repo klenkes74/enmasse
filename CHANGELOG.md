@@ -1,3 +1,55 @@
+## 0.16.0 (January 30, 2017)
+* Support for authorization at address level. To enable this, create groups in keycloak on the form 'send_*' and 'recv_*', and have users join a particular group to allow sending or receiving from a particular address (wildcards if you want to allow on all addresses). More detailed docs will follow
+* Ability to deploy keycloak-controller standalone in order to automatically manage an  external keycloak instance
+* Enable hawtio console for brokers for easier debugging broker state. The console is authenticated against keycloak.
+* Configserv is removed from standard address space. This lowers the footprint and complexity.
+* Add prometheus and grafana addons that can be used to monitor the messaging cluster, including routers and brokers
+* Add prometheus endpoint to broker and remove hawkular support
+* Use statefulsets for brokers in standard address space
+
+## 0.15.3 (December 8, 2017)
+* Bug fixes to most components found in testing
+* The router in the standard address space now rejects unknown addresses rather than defaulting to
+  'anycast' behavior
+* Tune roles and permissions required to run in a shared OpenShift cluster so that it doesn't
+  require access to all projects in a cluster in order to work.
+* Update JDK version in Keycloak image
+* Improvements to console documentation
+* Added manual deployment process to online documentation
+* Version artifacts and pom files, rewrite on release
+* Report k8s events in address-controller and agent controller loops
+* Automatically create keycloak realm admin user
+* Add OpenWire and CORE port to brokered address space
+
+## 0.15.0 (November 22, 2017)
+* Add cluster roles that limit privileges required to run address controller
+* Add HTTPS support for standard authentication service
+* Use persistent volumes for standard authentication service
+* Support multiple address controllers on the same cluster
+* Enable HTTPS for REST API and console
+* Authenticate REST API using RBAC
+* Move REST API path from /v1 to /apis/enmasse.io/v1 to support aggregated API service
+* Upgrade broker to Apache Artemis 2.4.0
+* Upgrade keycloak to 3.3.0
+* Lots of bug fixes to console
+* Replace use of Ingress with K8S LoadBalancer Service
+
+## 0.14.0 (November 3, 2017)
+* New address space type: brokered
+    * A single ActiveMQ Artemis broker
+    * Supports JMS features such as transactions, message groups, queue selectors etc.
+    * Integrates with the authentication service
+    * A lightweight agent managing addresses + the EnMasse console
+* Add support for multitenant mode when running in Kubernetes
+* A ton of bug fixes to all EnMasse components found with an expanded test suite
+* Initial version of OpenAPI specification
+* Lots of new documentation at enmasse.io/documentation
+* Console renamed to agent in preparation for it to adopt multiple 'admin' functions
+* Support keycloak groups in the standard authentication service
+
+41 [issues](https://github.com/EnMasseProject/enmasse/milestone/4?closed=1) has been resolved for
+this release.
+
 ## 0.13.0 (September 22, 2017)
 * Added support for authentication. Users can now choose from 'none', 'standard' and 'external' as
   authentication services. See [authentication design doc](https://github.com/EnMasseProject/enmasse/blob/master/documentation/design/authentication.adoc)

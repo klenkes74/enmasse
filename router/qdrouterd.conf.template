@@ -24,6 +24,7 @@ router {
     mode: interior
     id: Router.${HOSTNAME}
     workerThreads: ${WORKER_THREADS}
+    defaultDistribution: unavailable
 }
 
 sslProfile {
@@ -72,7 +73,7 @@ sslProfile {
    name: ssl_internal_details
    certFile: /etc/enmasse-certs/tls.crt
    keyFile: /etc/enmasse-certs/tls.key
-   certDb: /tmp/ca.crt
+   certDb: /etc/enmasse-certs/ca.crt
 }
 
 listener {
@@ -111,4 +112,22 @@ linkRoute {
     prefix: ${DOLLAR}lwt
     dir: out
     containerId: lwt-service
+}
+
+address {
+    name: override.mqtt
+    prefix: ${DOLLAR}mqtt
+    distribution: balanced
+}
+
+address {
+    name: override.subctrl
+    prefix: ${DOLLAR}subctrl
+    distribution: balanced
+}
+
+address {
+    name: override.temp
+    prefix: ${DOLLAR}temp
+    distribution: balanced
 }

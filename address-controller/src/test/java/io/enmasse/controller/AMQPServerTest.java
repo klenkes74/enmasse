@@ -3,7 +3,6 @@ package io.enmasse.controller;
 import io.enmasse.address.model.AddressSpace;
 import io.enmasse.address.model.Endpoint;
 import io.enmasse.address.model.SecretCertProvider;
-import io.enmasse.address.model.types.standard.StandardAddressSpaceType;
 import io.enmasse.k8s.api.TestAddressSpaceApi;
 import io.vertx.core.Vertx;
 import org.junit.After;
@@ -38,8 +37,8 @@ public class AMQPServerTest {
         return new AddressSpace.Builder()
                 .setName(name)
                 .setNamespace(name)
-                .setType(new StandardAddressSpaceType())
-                .setPlan(new StandardAddressSpaceType().getPlans().get(0))
+                .setType("mytype")
+                .setPlan("myplan")
                 .setStatus(new io.enmasse.address.model.Status(false))
                 .appendEndpoint(new Endpoint.Builder()
                         .setName("foo")
@@ -70,7 +69,7 @@ public class AMQPServerTest {
     public void testAddressingService() throws InterruptedException, ExecutionException, TimeoutException, IOException {
         Address destination =
                 new Address("addr1", "group0", false, false, Optional.empty(), Optional.empty(), new Status(false));
-        instanceApi.withAddressSpace(AddressSpaceId.withId("myinstance")).createAddress(destination);
+        addressSpaceApi.withAddressSpace(AddressSpaceId.withId("myinstance")).createAddress(destination);
 
         SyncRequestClient client = new SyncRequestClient("localhost", port, vertx);
         Message request = Message.Factory.create();

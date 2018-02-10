@@ -50,6 +50,9 @@ public class AMQPConnectorServiceFactory implements ConnectorServiceFactory {
       properties.add(TransportConstants.KEYSTORE_PASSWORD_PROP_NAME);
       properties.add(TransportConstants.TRUSTSTORE_PATH_PROP_NAME);
       properties.add(TransportConstants.TRUSTSTORE_PASSWORD_PROP_NAME);
+      properties.add(TransportConstants.USE_GLOBAL_WORKER_POOL_PROP_NAME);
+      properties.add(TransportConstants.REMOTING_THREADS_PROPNAME);
+      properties.add(TransportConstants.NETTY_CONNECT_TIMEOUT);
       return properties;
    }
 
@@ -80,6 +83,7 @@ public class AMQPConnectorServiceFactory implements ConnectorServiceFactory {
       setOrDefault(configuration, connectorConfig, TransportConstants.KEYSTORE_PASSWORD_PROP_NAME, "enmasse");
       setOrDefault(configuration, connectorConfig, TransportConstants.TRUSTSTORE_PATH_PROP_NAME, System.getenv("TRUSTSTORE_PATH"));
       setOrDefault(configuration, connectorConfig, TransportConstants.TRUSTSTORE_PASSWORD_PROP_NAME, "enmasse");
+      setOrDefault(configuration, connectorConfig, TransportConstants.NETTY_CONNECT_TIMEOUT, "10000");
 
       Optional<String> sourceAddress = Optional.ofNullable((String)configuration.get(SOURCE_ADDRESS));
       Optional<String> clientAddress = Optional.ofNullable((String)configuration.get(CLIENT_ADDRESS));

@@ -15,7 +15,8 @@
  */
 'use strict';
 
-var log = require("./log.js").logger();
+var util = require('util');
+var log = require('./log.js').logger();
 
 var Artemis = function (connection) {
     this.connection = connection;
@@ -25,6 +26,10 @@ var Artemis = function (connection) {
     connection.on('message', this.incoming.bind(this));
     connection.on('receiver_error', this.on_receiver_error.bind(this));
     connection.on('sender_error', this.on_sender_error.bind(this));
+    var self;
+    connection.on('connection_open', function (context) {
+        log.info('[' + context.connection.container_id + '] connection opened');
+    });
     connection.on('connection_error', this.on_connection_error.bind(this));
     connection.on('connection_close', this.on_connection_close.bind(this));
     connection.on('disconnected', this.disconnected.bind(this));
@@ -36,7 +41,7 @@ var Artemis = function (connection) {
 };
 
 Artemis.prototype.ready = function (context) {
-    log.debug('[' + this.connection.container_id + '] ready to send requests');
+    log.info('[' + this.connection.container_id + '] ready to send requests');
     this.address = context.receiver.remote.attach.source.address;
     this._send_pending_requests();
 };
@@ -52,7 +57,7 @@ function as_handler(resolve, reject) {
                 log.info('[' + this.connection.container_id + '] Error parsing message body: ' + message + ': ' + e);
             }
         } else {
-            reject('Request did not succeed, response: ' + message.toString());
+            reject(message.body);
         }
     };
 }
@@ -84,26 +89,26 @@ Artemis.prototype.abort_requests = function (error) {
 }
 
 Artemis.prototype.on_sender_error = function (context) {
-    var error = this.connection.container_id + ' sender error ' + context.sender.error;
+    var error = this.connection.container_id + ' sender error ' + JSON.stringify(context.sender.error);
     log.info('[' + this.connection.container_id + '] ' + error);
     this.abort_requests(error);
 };
 
 Artemis.prototype.on_receiver_error = function (context) {
-    var error = this.connection.container_id + ' receiver error ' + context.receiver.error;
+    var error = this.connection.container_id + ' receiver error ' + JSON.stringify(context.receiver.error);
     log.info('[' + this.connection.container_id + '] ' + error);
     this.abort_requests(error);
 };
 
 Artemis.prototype.on_connection_error = function (context) {
-    var error = this.connection.container_id + ' connection error ' + context.connection.error;
-    log.info('[' + this.connection.container_id + '] ' + error);
+    var error = this.connection.container_id + ' connection error ' + JSON.stringify(context.connection.error);
+    log.info('[' + this.connection.container_id + '] connection error: ' + JSON.stringify(context.connection.error));
     this.abort_requests(error);
 };
 
 Artemis.prototype.on_connection_close = function (context) {
     var error = this.connection.container_id + ' connection closed';
-    log.info('[' + this.connection.container_id + '] ' + error);
+    log.info('[' + this.connection.container_id + '] connection closed');
     this.abort_requests(error);
 };
 
@@ -155,15 +160,17 @@ Artemis.prototype.getQueueNames = function () {
     return this._request('broker', 'getQueueNames', []);
 }
 
-var queue_attributes = {temporary: 'isTemporary',
-                        durable: 'isDurable',
-                        messages: 'getMessageCount',
-                        consumers: 'getConsumerCount',
-                        enqueued: 'getMessagesAdded',
-                        delivering: 'getDeliveringCount',
-                        acknowledged: 'getMessagesAcknowledged',
-                        expired: 'getMessagesExpired',
-                        killed: 'getMessagesKilled'};
+var queue_attributes = {
+    temporary: 'isTemporary',
+    durable: 'isDurable',
+    messages: 'getMessageCount',
+    consumers: 'getConsumerCount',
+    enqueued: 'getMessagesAdded',
+    delivering: 'getDeliveringCount',
+    acknowledged: 'getMessagesAcknowledged',
+    expired: 'getMessagesExpired',
+    killed: 'getMessagesKilled'
+};
 
 function add_queue_method(name) {
     Artemis.prototype[name] = function (queue) {
@@ -175,18 +182,30 @@ for (var key in queue_attributes) {
     add_queue_method(queue_attributes[key]);
 }
 
+var extra_queue_attributes = {
+    address: 'getAddress',
+    routing_type: 'getRoutingType'
+}
+
+for (var key in extra_queue_attributes) {
+    add_queue_method(extra_queue_attributes[key]);
+}
+
 Artemis.prototype.listQueues = function (attribute_list) {
     var attributes = attribute_list || Object.keys(queue_attributes);
     var agent = this;
     return new Promise(function (resolve, reject) {
         agent.getQueueNames().then(function (results) {
-            var allnames = results || [];
+            if (results && !util.isArray(results)) {
+                log.info('unexpected result for queue names: %j', results);
+            }
+            var allnames = util.isArray(results) ? results : [];
             var names = allnames.filter(function (n) { return n !== agent.address; } );
             Promise.all(
                 names.map(function (name) {
                     return Promise.all(
                         attributes.map(function (attribute) {
-                            var method_name = queue_attributes[attribute];
+                            var method_name = queue_attributes[attribute] || extra_queue_attributes[attribute];
                             if (method_name) {
                                 return agent[method_name](name);
                             } else {
@@ -257,11 +276,15 @@ Artemis.prototype.listAddresses = function () {
                     var a = {'name': name};
                     for (var i = 0; i < results.length; i++) {
                         if (attributes[i] === 'delivery_modes') {
-                            if (results[i].indexOf('MULTICAST') >= 0) {
-                                a.multicast = true;
-                            }
-                            if (results[i].indexOf('ANYCAST') >= 0) {
-                                a.anycast = true;
+                            if (results[i]) {
+                                if (results[i].indexOf('MULTICAST') >= 0) {
+                                    a.multicast = true;
+                                }
+                                if (results[i].indexOf('ANYCAST') >= 0) {
+                                    a.anycast = true;
+                                }
+                            } else {
+                                log.info('unexpected result for delivery_modes: %j', results[i]);
                             }
                         } else {
                             a[attributes[i]] = results[i];
@@ -298,6 +321,20 @@ Artemis.prototype.createAddress = function (name, type) {
 
 Artemis.prototype.deleteAddress = function (name) {
     return this._request('broker', 'deleteAddress', [name]);
+};
+
+Artemis.prototype.deleteAddressAndBindings = function (address) {
+    var self = this;
+    return this.deleteBindingsFor(address).then(function () {
+        return self.deleteAddress(address);
+    });
+};
+
+Artemis.prototype.deleteBindingsFor = function (address) {
+    var self = this;
+    return this.getBoundQueues(address).then(function (results) {
+        return Promise.all(results.map(function (q) { return self.destroyQueue(q); }));
+    });
 };
 
 Artemis.prototype.getAllQueuesAndTopics = function () {
@@ -364,7 +401,7 @@ Artemis.prototype.createConnectorService = function (name, source, target) {
         "host": process.env.MESSAGING_SERVICE_HOST,
         "port": process.env.MESSAGING_SERVICE_PORT_AMQPS_BROKER,
         "containerId": name,
-        "groupId": name,
+        "clusterId": name,
         "clientAddress": target,
         "sourceAddress": source
     };
@@ -383,6 +420,24 @@ Artemis.prototype.getConnectorServices = function () {
 Artemis.prototype.listConnections = function () {
     return this._request('broker', 'listConnectionsAsJSON', []).then(function (result) {
         return JSON.parse(result);
+    });
+}
+
+Artemis.prototype.listSessionsForConnection = function (connection_id) {
+    return this._request('broker', 'listSessionsAsJSON', [connection_id]).then(function (result) {
+        return JSON.parse(result);
+    });
+}
+
+Artemis.prototype.listConnectionsWithSessions = function () {
+    var self = this;
+    return this.listConnections().then(function (conns) {
+        return Promise.all(conns.map(function (c) { return self.listSessionsForConnection(c.connectionID)})).then(function (sessions) {
+            for (var i in conns) {
+                conns[i].sessions = sessions[i];
+            }
+            return conns;
+        });
     });
 }
 

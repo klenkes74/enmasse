@@ -1,10 +1,9 @@
 package io.enmasse.systemtest.brokered;
 
-import io.enmasse.systemtest.AddressSpace;
+import io.enmasse.systemtest.AddressType;
 import io.enmasse.systemtest.Destination;
-import io.enmasse.systemtest.MultiTenantTestBase;
+import io.enmasse.systemtest.bases.BrokeredTestBase;
 import io.enmasse.systemtest.amqp.AmqpClient;
-import io.enmasse.systemtest.amqp.AmqpClientFactory;
 import org.apache.qpid.proton.amqp.messaging.AmqpValue;
 import org.apache.qpid.proton.message.Message;
 import org.junit.Test;
@@ -17,21 +16,17 @@ import java.util.concurrent.TimeUnit;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.*;
 
-public class QueueTest extends MultiTenantTestBase {
+public class QueueTest extends BrokeredTestBase {
 
     /**
      * related github issue: #387
      */
     @Test
-    public void messageGroupTest() throws Exception{
-        AddressSpace addressSpace = new AddressSpace("brokered-message-group", "brokered-message-group");
-        createAddressSpace(addressSpace, "none", "brokered");
-        Destination dest = Destination.queue("messageGroupQueue");
-        setAddresses(addressSpace, dest);
+    public void messageGroupTest() throws Exception {
+        Destination dest = Destination.queue("messageGroupQueue", getDefaultPlan(AddressType.QUEUE));
+        setAddresses(sharedAddressSpace, dest);
 
-        AmqpClientFactory amqpFactory = createAmqpClientFactory(addressSpace);
-        AmqpClient client = amqpFactory.createQueueClient(addressSpace);
-        client.getConnectOptions().setUsername("test").setPassword("test");
+        AmqpClient client = amqpClientFactory.createQueueClient(sharedAddressSpace);
 
         int msgsCount = 20;
         int msgCountGroupA = 15;
@@ -53,16 +48,18 @@ public class QueueTest extends MultiTenantTestBase {
         Future<Integer> sent = client.sendMessages(dest.getAddress(),
                 listOfMessages.toArray(new Message[listOfMessages.size()]));
 
-        assertThat(sent.get(1, TimeUnit.MINUTES), is(msgsCount));
-        assertThat(receivedGroupA.get(1, TimeUnit.MINUTES).size(), is(msgCountGroupA));
-        assertThat(receivedGroupB.get(1, TimeUnit.MINUTES).size(), is(msgCountGroupB));
+        assertThat("Wrong count of messages sent", sent.get(1, TimeUnit.MINUTES), is(msgsCount));
+        assertThat("Wrong count of messages received from group A",
+                receivedGroupA.get(1, TimeUnit.MINUTES).size(), is(msgCountGroupA));
+        assertThat("Wrong count of messages received from group A",
+                receivedGroupB.get(1, TimeUnit.MINUTES).size(), is(msgCountGroupB));
 
         for (Message m : receivedGroupA.get()) {
-            assertEquals(m.getGroupId(), "group A");
+            assertEquals("Group id is different", m.getGroupId(), "group A");
         }
 
         for (Message m : receivedGroupB.get()) {
-            assertEquals(m.getGroupId(), "group B");
+            assertEquals("Group id is different", m.getGroupId(), "group B");
         }
     }
 }

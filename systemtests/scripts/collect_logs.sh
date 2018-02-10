@@ -8,7 +8,7 @@ function runcmd {
     $cmd > $logfile
 }
 
-mkdir -p $ARTIFACTS_DIR/logs
+mkdir -p ${ARTIFACTS_DIR}/logs
 
 for pod in `oc get pods -o jsonpath='{.items[*].metadata.name}'`
 do
@@ -23,4 +23,4 @@ do
     done
 done
 
-cp -r /tmp/testlogs/* $ARTIFACTS_DIR/logs/
+cp -r ${OPENSHIFT_TEST_LOGDIR}/* ${ARTIFACTS_DIR}/logs/

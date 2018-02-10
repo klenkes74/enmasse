@@ -4,21 +4,20 @@
     "kind": "Route",
     "apiVersion": "v1",
     "metadata": {
-        "labels": {
-          "app": "enmasse"
-        },
-        "name": "restapi"
+      "labels": {
+        "app": "enmasse"
+      },
+      "name": "restapi"
     },
     "spec": {
-        "host": hostname,
-        "path": "/v1",
-        "to": {
-            "kind": "Service",
-            "name": "address-controller"
-        },
-        "port": {
-            "targetPort": "http"
-        }
+      "host": hostname,
+      "to": {
+        "kind": "Service",
+        "name": "address-controller"
+      },
+      "tls": {
+        "termination": "passthrough"
+      }
     }
   },
 
@@ -39,10 +38,10 @@
           "http": {
             "paths": [
               {
-                "path": "/v1",
+                "path": "/apis/enmasse.io/v1",
                 "backend": {
                   "serviceName": "address-controller",
-                  "servicePort": 8080
+                  "servicePort": 443
                 }
               }
             ]

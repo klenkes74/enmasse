@@ -15,31 +15,32 @@
  */
 package io.enmasse.address.model;
 
-import io.enmasse.address.model.types.AddressSpaceType;
-import io.enmasse.address.model.types.Plan;
-
 import java.util.*;
 
 /**
- * An EnMasse AddressSpace address-space.
+ * An EnMasse AddressSpace.
  */
 public class AddressSpace {
     private final String name;
     private final String namespace;
-    private final AddressSpaceType type;
-    private final List<io.enmasse.address.model.Endpoint> endpointList;
-    private final Plan plan;
+    private final String typeName;
+    private final List<Endpoint> endpointList;
+    private final String planName;
     private final AuthenticationService authenticationService;
     private final Status status;
+    private final String uid;
+    private final String createdBy;
 
-    private AddressSpace(String name, String namespace, AddressSpaceType type, List<Endpoint> endpointList, Plan plan, AuthenticationService authenticationService, Status status) {
+    private AddressSpace(String name, String namespace, String typeName, List<Endpoint> endpointList, String planName, AuthenticationService authenticationService, Status status, String uid, String createdBy) {
         this.name = name;
         this.namespace = namespace;
-        this.type = type;
+        this.typeName = typeName;
         this.endpointList = endpointList;
-        this.plan = plan;
+        this.planName = planName;
         this.authenticationService = authenticationService;
         this.status = status;
+        this.uid = uid;
+        this.createdBy = createdBy;
     }
 
     public String getName() {
@@ -50,20 +51,31 @@ public class AddressSpace {
         return namespace;
     }
 
-    public AddressSpaceType getType() {
-        return type;
+    public String getType() {
+        return typeName;
     }
 
     public List<io.enmasse.address.model.Endpoint> getEndpoints() {
-        return Collections.unmodifiableList(endpointList);
+        if (endpointList != null) {
+            return Collections.unmodifiableList(endpointList);
+        }
+        return null;
     }
 
-    public Plan getPlan() {
-        return plan;
+    public String getPlan() {
+        return planName;
+    }
+
+    public String getUid() {
+        return uid;
     }
 
     public Status getStatus() {
         return status;
+    }
+
+    public String getCreatedBy() {
+        return createdBy;
     }
 
     @Override
@@ -86,8 +98,8 @@ public class AddressSpace {
         StringBuilder sb = new StringBuilder();
         sb.append("{name=").append(name).append(",")
                 .append("namespace=").append(namespace).append(",")
-                .append("type=").append(type.getName()).append(",")
-                .append("plan=").append(plan.getName()).append("}");
+                .append("type=").append(typeName).append(",")
+                .append("plan=").append(planName).append("}");
         return sb.toString();
     }
 
@@ -98,11 +110,13 @@ public class AddressSpace {
     public static class Builder {
         private String name;
         private String namespace;
-        private AddressSpaceType type;
+        private String type;
         private List<io.enmasse.address.model.Endpoint> endpointList = new ArrayList<>();
-        private Plan plan;
+        private String plan;
         private AuthenticationService authenticationService = new AuthenticationService.Builder().build();
         private Status status = new Status(false);
+        private String uid;
+        private String createdBy;
 
         public Builder() {
         }
@@ -111,10 +125,16 @@ public class AddressSpace {
             this.name = addressSpace.getName();
             this.namespace = addressSpace.getNamespace();
             this.type = addressSpace.getType();
-            this.endpointList = new ArrayList<>(addressSpace.getEndpoints());
+            if (addressSpace.getEndpoints() != null) {
+                this.endpointList = new ArrayList<>(addressSpace.getEndpoints());
+            } else {
+                this.endpointList = null;
+            }
             this.plan = addressSpace.getPlan();
             this.status = new Status(addressSpace.getStatus());
             this.authenticationService = addressSpace.getAuthenticationService();
+            this.uid = addressSpace.getUid();
+            this.createdBy = addressSpace.getCreatedBy();
         }
 
         public Builder setName(String name) {
@@ -130,25 +150,31 @@ public class AddressSpace {
             return this;
         }
 
-        public Builder setType(AddressSpaceType type) {
-            this.type = type;
-            if (this.plan == null) {
-                this.plan = type.getDefaultPlan();
+        public Builder setType(String addressSpaceType) {
+            this.type = addressSpaceType;
+            return this;
+        }
+
+        public Builder setUid(String uid) {
+            this.uid = uid;
+            return this;
+        }
+
+        public Builder setEndpointList(List<Endpoint> endpointList) {
+            if (endpointList != null) {
+                this.endpointList = new ArrayList<>(endpointList);
+            } else {
+                this.endpointList = null;
             }
             return this;
         }
 
-        public Builder setEndpointList(List<io.enmasse.address.model.Endpoint> endpointList) {
-            this.endpointList = new ArrayList<>(endpointList);
-            return this;
-        }
-
-        public Builder appendEndpoint(io.enmasse.address.model.Endpoint endpoint) {
+        public Builder appendEndpoint(Endpoint endpoint) {
             this.endpointList.add(endpoint);
             return this;
         }
 
-        public Builder setPlan(Plan plan) {
+        public Builder setPlan(String plan) {
             this.plan = plan;
             return this;
         }
@@ -163,15 +189,18 @@ public class AddressSpace {
             return this;
         }
 
+        public Builder setCreatedBy(String createdBy) {
+            this.createdBy = createdBy;
+            return this;
+        }
+
         public AddressSpace build() {
             Objects.requireNonNull(name, "name not set");
             Objects.requireNonNull(namespace, "namespace not set");
             Objects.requireNonNull(type, "type not set");
-            Objects.requireNonNull(endpointList);
             Objects.requireNonNull(authenticationService, "authentication service not set");
-            Objects.requireNonNull(plan, "plan not set");
             Objects.requireNonNull(status, "status not set");
-            return new AddressSpace(name, namespace, type, endpointList, plan, authenticationService, status);
+            return new AddressSpace(name, namespace, type, endpointList, plan, authenticationService, status, uid, createdBy);
         }
 
         public String getNamespace() {

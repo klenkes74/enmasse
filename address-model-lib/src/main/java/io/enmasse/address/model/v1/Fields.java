@@ -46,4 +46,24 @@ interface Fields {
     String DESCRIPTION = "description";
     String PLANS = "plans";
     String DETAILS = "details";
+    String PORT = "port";
+    String UID = "uid";
+    String CREATED_BY = "createdBy";
+    String DISPLAY_NAME = "displayName";
+    String DISPLAY_ORDER = "displayOrder";
+    String SHORT_DESCRIPTION = "shortDescription";
+    String LONG_DESCRIPTION = "longDescription";
+    String RESOURCES = "resources";
+    String REQUIRED_RESOURCES = "requiredResources";
+    String ADDRESS_PLANS = "addressPlans";
+    String ADDRESS_TYPE = "addressType";
+    String CLUSTER_NAME = "clusterName";
+    String TEMPLATE = "template";
+    String PARAMETERS = "parameters";
+    String MIN = "min";
+    String MAX = "max";
+    String VALUE = "value";
+    String CREDIT = "credit";
+    String ANNOTATIONS = "annotations";
+    String ADDRESS_SPACE_TYPE = "addressSpaceType";
 }

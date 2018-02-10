@@ -16,18 +16,14 @@
 package io.enmasse.controller.auth;
 
 import java.io.*;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import io.enmasse.config.AnnotationKeys;
-import io.enmasse.config.LabelKeys;
-import io.fabric8.kubernetes.api.model.Secret;
+import io.fabric8.kubernetes.api.model.*;
 import io.fabric8.openshift.client.OpenShiftClient;
+import io.vertx.core.impl.Deployment;
 import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,19 +34,13 @@ import org.slf4j.LoggerFactory;
 public class OpenSSLCertManager implements CertManager {
     private static final Logger log = LoggerFactory.getLogger(OpenSSLCertManager.class.getName());
     private final OpenShiftClient client;
-    private final File caKey;
-    private final File caCert;
     private final File certDir;
     private final String globalNamespace;
 
     public OpenSSLCertManager(OpenShiftClient controllerClient,
-                              File caKey,
-                              File caCert,
                               File certDir,
                               final String globalNamespace) {
         this.client = controllerClient;
-        this.caKey = caKey;
-        this.caCert = caCert;
         this.certDir = certDir;
         this.globalNamespace = globalNamespace;
     }
@@ -58,20 +48,32 @@ public class OpenSSLCertManager implements CertManager {
     @Override
     public void issueRouteCert(String secretName, String namespace, String ... hostnames) throws Exception {
         Secret secret = client.secrets().inNamespace(namespace).withName(secretName).get();
-        if (secret != null) {
+        if (secret == null) {
             String keyKey = "tls.key";
             String certKey = "tls.crt";
-            if (secret.getData() != null && secret.getData().containsKey(keyKey) && secret.getData().containsKey(certKey)) {
-                return;
-            }
 
-            log.info("Creating self-signed certificates for {}", secret);
+            log.info("Creating self-signed certificates for {}", secretName);
             File key = File.createTempFile("tls", "key");
             File cert = File.createTempFile("tls", "crt");
 
             createSelfSignedCert(key, cert);
-            createSecretFromCertAndKeyFiles(secretName, namespace, keyKey, certKey, key, cert, client);
+            secret = createSecretFromCertAndKeyFiles(secretName, namespace, keyKey, certKey, key, cert, client);
         }
+
+        ServiceAccount defaultAccount = client.serviceAccounts().inNamespace(namespace).withName("default").get();
+        for (ObjectReference reference : defaultAccount.getSecrets()) {
+            if (reference.getName().equals(secretName)) {
+                return;
+            }
+        }
+
+        client.serviceAccounts().inNamespace(namespace).withName("default").edit()
+                .addToSecrets(new ObjectReferenceBuilder()
+                        .withKind(secret.getKind())
+                        .withName(secret.getMetadata().getName())
+                        .withApiVersion(secret.getApiVersion())
+                        .build())
+                .done();
     }
 
     private static void createSelfSignedCert(final File keyFile, final File certFile) {
@@ -88,19 +90,19 @@ public class OpenSSLCertManager implements CertManager {
         createSecretFromCertAndKeyFiles(secretName, namespace, "tls.key", "tls.crt", keyFile, certFile, client);
     }
 
-    private static void createSecretFromCertAndKeyFiles(final String secretName,
-                                                        final String namespace,
-                                                        final String keyKey,
-                                                        final String certKey,
-                                                        final File keyFile,
-                                                        final File certFile,
-                                                        final OpenShiftClient client)
+    private static Secret createSecretFromCertAndKeyFiles(final String secretName,
+                                                          final String namespace,
+                                                          final String keyKey,
+                                                          final String certKey,
+                                                          final File keyFile,
+                                                          final File certFile,
+                                                          final OpenShiftClient client)
             throws IOException {
         Map<String, String> data = new LinkedHashMap<>();
         Base64.Encoder encoder = Base64.getEncoder();
         data.put(keyKey, encoder.encodeToString(FileUtils.readFileToByteArray(keyFile)));
         data.put(certKey, encoder.encodeToString(FileUtils.readFileToByteArray(certFile)));
-        client.secrets().inNamespace(namespace).withName(secretName).createOrReplaceWithNew()
+        return client.secrets().inNamespace(namespace).withName(secretName).createOrReplaceWithNew()
                 .editOrNewMetadata()
                 .withName(secretName)
                 .endMetadata()
@@ -133,9 +135,18 @@ public class OpenSSLCertManager implements CertManager {
 
     @Override
     public Collection<CertComponent> listComponents(String namespace) {
-        return client.extensions().deployments().inNamespace(namespace).list().getItems().stream()
-                .filter(deployment -> deployment.getMetadata().getAnnotations() != null && deployment.getMetadata().getAnnotations().containsKey(AnnotationKeys.CERT_SECRET_NAME))
-                .map(deployment -> new CertComponent(deployment.getMetadata().getName(), namespace, deployment.getMetadata().getAnnotations().get(AnnotationKeys.CERT_SECRET_NAME)))
+        List<HasMetadata> components = new ArrayList<>();
+
+        components.addAll(client.extensions().deployments().inNamespace(namespace).list().getItems());
+        components.addAll(client.apps().statefulSets().inNamespace(namespace).list().getItems());
+
+        return components.stream()
+                .filter(object -> object.getMetadata().getAnnotations() != null && object.getMetadata().getAnnotations().containsKey(AnnotationKeys.CERT_SECRET_NAME))
+                .map(object -> {
+                    Map<String, String> annotations = object.getMetadata().getAnnotations();
+                    String cn = annotations.getOrDefault(AnnotationKeys.CERT_CN, object.getMetadata().getName());
+                    return new CertComponent(cn, namespace, annotations.get(AnnotationKeys.CERT_SECRET_NAME));
+                })
                 .collect(Collectors.toList());
     }
 
@@ -243,11 +254,8 @@ public class OpenSSLCertManager implements CertManager {
     }
 
     public static OpenSSLCertManager create(OpenShiftClient controllerClient,
-                                            File caDir,
                                             final String globalNamespace) {
-        File caKey = new File(caDir, "tls.key");
-        File caCrt = new File(caDir, "tls.crt");
-        return new OpenSSLCertManager(controllerClient, caKey, caCrt, new File("/tmp"), globalNamespace);
+        return new OpenSSLCertManager(controllerClient, new File("/tmp"), globalNamespace);
     }
 
 }

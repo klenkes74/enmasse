@@ -24,19 +24,21 @@ import io.enmasse.controller.api.osb.v2.catalog.OSBCatalogService;
 import io.enmasse.controller.api.osb.v2.catalog.Plan;
 import io.enmasse.controller.api.osb.v2.catalog.Service;
 import io.enmasse.k8s.api.TestAddressSpaceApi;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.util.List;
 import javax.ws.rs.core.Response;
 
-public class CatalogServiceTest {
+@Ignore
+public class CatalogServiceTest extends OSBTestBase {
 
     @Test
     public void testCatalog() throws IOException {
-        OSBCatalogService catalogService = new OSBCatalogService(new TestAddressSpaceApi());
+        OSBCatalogService catalogService = new OSBCatalogService(new TestAddressSpaceApi(), "controller");
 
-        Response response = catalogService.getCatalog();
+        Response response = catalogService.getCatalog(getSecurityContext());
         CatalogResponse catalogResponse = (CatalogResponse) response.getEntity();
         List<Service> services = catalogResponse.getServices();
 

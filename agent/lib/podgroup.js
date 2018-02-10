@@ -19,10 +19,7 @@ var log = require("./log.js").logger();
 var path = require('path');
 var fs = require('fs');
 var artemis = require('./artemis.js');
-var cert_dir = (process.env.CERT_DIR !== undefined) ? process.env.CERT_DIR : '/etc/enmasse-certs';
-var ca_path = path.resolve(cert_dir, 'ca.crt');
-var client_crt_path = path.resolve(cert_dir, 'tls.crt');
-var client_key_path = path.resolve(cert_dir, 'tls.key');
+var tls_options = require('./tls_options.js');
 
 function get(object, fields, default_value) {
     var o = object;
@@ -36,7 +33,7 @@ function get_broker_port(pod) {
     return get(pod.ports, ['broker', 'amqp'], 5673);
 };
 
-function Pod(pod) {
+function BrokerPod(pod) {
     this.name = pod.name;
     var options = {
         id:   pod.name,
@@ -44,23 +41,21 @@ function Pod(pod) {
         port: get_broker_port(pod)
     };
     try {
-        options.ca                 = [fs.readFileSync(ca_path)];
-        options.transport          = 'tls';
-        options.rejectUnauthorized = false;
-        options.key                = fs.readFileSync(client_key_path);
-        options.cert               = fs.readFileSync(client_crt_path);
+        options = tls_options.get_client_options(options);
+        options.username = 'anonymous';
     } catch (error) {
-        log.warn('Unable to load certificates: ' + error);
+        log.error(error);
     }
     this.broker = artemis.connect(options);
 };
 
-Pod.prototype.close = function () {
+BrokerPod.prototype.close = function () {
     this.broker.close();
 };
 
-function PodGroup() {
+function PodGroup(constructor) {
     this.pods = {};
+    this.constructor = constructor || BrokerPod;
 };
 
 PodGroup.prototype.update = function (latest) {
@@ -86,12 +81,11 @@ PodGroup.prototype.update = function (latest) {
 }
 
 PodGroup.prototype.added = function (pod) {
-    this.pods[pod.name] = new Pod(pod);
+    this.pods[pod.name] = new this.constructor(pod);
 };
 
 PodGroup.prototype.removed_by_name = function (podname) {
-    //TODO: may be restarted, so should wait for a while before removing
-    this.pods[podname].close();
+    if (this.pods[podname].close) this.pods[podname].close();
     delete this.pods[podname];
 };
 
@@ -115,6 +109,10 @@ PodGroup.prototype.broker_list = function () {
     return list;
 };
 
+PodGroup.prototype.empty = function () {
+    return this.pods.length === 0;
+};
+
 PodGroup.prototype.close = function () {
     for (var p in this.pods) {
         this.pods[p].close();
@@ -122,6 +120,10 @@ PodGroup.prototype.close = function () {
     this.pods = [];
 };
 
-module.exports = function () {
-    return new PodGroup();
+PodGroup.prototype.get_port_from_pod_definition = function (pod, container, port_name) {
+    return get(pod.ports, [container, port_name || 'amqp']);
+};
+
+module.exports = function (constructor) {
+    return new PodGroup(constructor);
 }

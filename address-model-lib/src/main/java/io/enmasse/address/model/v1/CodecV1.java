@@ -18,10 +18,6 @@ package io.enmasse.address.model.v1;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import io.enmasse.address.model.*;
-import io.enmasse.address.model.types.AddressSpaceType;
-import io.enmasse.address.model.types.Schema;
-import io.enmasse.address.model.types.brokered.BrokeredAddressSpaceType;
-import io.enmasse.address.model.types.standard.StandardAddressSpaceType;
 
 import java.util.*;
 
@@ -29,7 +25,6 @@ import java.util.*;
  * Codec that provides the object mapper for V1 format
  */
 public class CodecV1 {
-    private final Map<String, AddressSpaceType> typeMap = new HashMap<>();
     private final ObjectMapper mapper;
 
 
@@ -40,7 +35,7 @@ public class CodecV1 {
     private static final CodecV1 instance;
 
     static {
-        instance = new CodecV1(Arrays.asList(new StandardAddressSpaceType(), new BrokeredAddressSpaceType()), resolveAuthServiceType(System.getenv()));
+        instance = new CodecV1(resolveAuthServiceType(System.getenv()));
     }
 
     public static AuthenticationServiceType resolveAuthServiceType(Map<String, String> env) {
@@ -59,29 +54,17 @@ public class CodecV1 {
         return this.mapper;
     }
 
-    private CodecV1(Collection<AddressSpaceType> addressSpaceTypes, AuthenticationServiceType defaultAuthServiceType) {
-        for (AddressSpaceType type : addressSpaceTypes) {
-            typeMap.put(type.getName(), type);
-        }
+    private CodecV1(AuthenticationServiceType defaultAuthServiceType) {
         this.mapper = createMapper(defaultAuthServiceType);
     }
 
     private ObjectMapper createMapper(AuthenticationServiceType defaultAuthServiceType) {
         ObjectMapper mapper = new ObjectMapper();
         SimpleModule module = new SimpleModule();
-        DecodeContext context = new DecodeContext() {
-            @Override
-            public AddressSpaceType getAddressSpaceType(String typeName) {
-                return typeMap.get(typeName);
-            }
-
-            @Override
-            public AuthenticationServiceType getDefaultAuthenticationServiceType() {
-                return defaultAuthServiceType;
-            }
-        };
+        DecodeContext context = () -> defaultAuthServiceType;
 
         AddressV1Deserializer addressDeserializer = new AddressV1Deserializer();
+        AddressListV1Deserializer addressListDeserializer = new AddressListV1Deserializer(addressDeserializer);
         AddressSpaceV1Deserializer addressSpaceDeserializer = new AddressSpaceV1Deserializer(context);
 
         module.addDeserializer(Address.class, addressDeserializer);
@@ -89,12 +72,17 @@ public class CodecV1 {
         module.addDeserializer(AddressSpace.class, addressSpaceDeserializer);
         module.addSerializer(AddressSpace.class, new AddressSpaceV1Serializer());
 
-        module.addDeserializer(AddressList.class, new AddressListV1Deserializer(addressDeserializer));
+        module.addDeserializer(Either.class, new AddressAndAddressListDeserializer(addressDeserializer, addressListDeserializer));
+        module.addDeserializer(AddressList.class, addressListDeserializer);
         module.addSerializer(AddressList.class, new AddressListV1Serializer());
         module.addDeserializer(AddressSpaceList.class, new AddressSpaceListV1Deserializer(addressSpaceDeserializer));
         module.addSerializer(AddressSpaceList.class, new AddressSpaceListV1Serializer());
 
+        module.addDeserializer(AddressSpacePlan.class, new AddressSpacePlanV1Deserializer());
+        module.addDeserializer(AddressPlan.class, new AddressPlanV1Deserializer());
+        module.addDeserializer(ResourceDefinition.class, new ResourceDefinitionV1Deserializer());
         module.addSerializer(Schema.class, new SchemaV1Serializer());
+
         mapper.registerModule(module);
         return mapper;
     }

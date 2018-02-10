@@ -16,8 +16,9 @@
 
 package io.enmasse.systemtest.standard.mqtt;
 
+import io.enmasse.systemtest.AddressType;
 import io.enmasse.systemtest.Destination;
-import io.enmasse.systemtest.TestBase;
+import io.enmasse.systemtest.bases.StandardTestBase;
 import io.enmasse.systemtest.mqtt.MqttClient;
 import org.junit.Test;
 
@@ -32,7 +33,7 @@ import static org.junit.Assert.assertThat;
 /**
  * Tests related to publish messages via MQTT
  */
-public class PublishTest extends TestBase {
+public class PublishTest extends StandardTestBase {
 
     @Test
     public void testPublishQoS0() throws Exception {
@@ -62,7 +63,7 @@ public class PublishTest extends TestBase {
 
     private void publish(List<String> messages, List<Integer> publisherQos, int subscriberQos) throws Exception {
 
-        Destination dest = Destination.topic("mytopic");
+        Destination dest = Destination.topic("mytopic", getDefaultPlan(AddressType.TOPIC));
         setAddresses(dest);
         Thread.sleep(60_000);
 
@@ -71,7 +72,9 @@ public class PublishTest extends TestBase {
         Future<List<String>> recvResult = client.recvMessages(dest.getAddress(), messages.size(), subscriberQos);
         Future<Integer> sendResult = client.sendMessages(dest.getAddress(), messages, publisherQos);
 
-        assertThat(sendResult.get(1, TimeUnit.MINUTES), is(messages.size()));
-        assertThat(recvResult.get(1, TimeUnit.MINUTES).size(), is(messages.size()));
+        assertThat("Wrong count of messages sent",
+                sendResult.get(1, TimeUnit.MINUTES), is(messages.size()));
+        assertThat("Wrong count of messages received",
+                recvResult.get(1, TimeUnit.MINUTES).size(), is(messages.size()));
     }
 }

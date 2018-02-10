@@ -18,15 +18,13 @@ package io.enmasse.systemtest.standard;
 
 import io.enmasse.systemtest.*;
 import io.enmasse.systemtest.amqp.AmqpClient;
+import io.enmasse.systemtest.bases.StandardTestBase;
 import org.apache.qpid.proton.amqp.messaging.AmqpValue;
 import org.apache.qpid.proton.message.Message;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -34,13 +32,13 @@ import java.util.stream.IntStream;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.*;
 
-public class QueueTest extends TestBase {
+public class QueueTest extends StandardTestBase {
 
     @Test
     public void testColocatedQueues() throws Exception {
-        Destination q1 = Destination.queue("queue1", Optional.of("pooled-inmemory"));
-        Destination q2 = Destination.queue("queue2", Optional.of("pooled-inmemory"));
-        Destination q3 = Destination.queue("queue3", Optional.of("pooled-inmemory"));
+        Destination q1 = Destination.queue("queue1", "pooled-queue");
+        Destination q2 = Destination.queue("queue2", "pooled-queue");
+        Destination q3 = Destination.queue("queue3", "pooled-queue");
         setAddresses(q1, q2, q3);
 
         AmqpClient client = amqpClientFactory.createQueueClient();
@@ -49,34 +47,9 @@ public class QueueTest extends TestBase {
         runQueueTest(client, q3);
     }
 
-
-    public void testInmemoryQueues() throws Exception {
-        Destination q1 = Destination.queue("inMemoryQueue1", Optional.of("inmemory"));
-        Destination q2 = Destination.queue("inMemoryQueue2", Optional.of("inmemory"));
-
-        setAddresses(q1, q2);
-
-        AmqpClient client = amqpClientFactory.createQueueClient();
-        runQueueTest(client, q1);
-        runQueueTest(client, q2);
-    }
-
-
-    public void testPersistedQueues() throws Exception {
-        Destination q1 = Destination.queue("persistedQueue1", Optional.of("persisted"));
-        Destination q2 = Destination.queue("persistedQueue2", Optional.of("persisted"));
-
-        setAddresses(q1, q2);
-
-        AmqpClient client = amqpClientFactory.createQueueClient();
-        runQueueTest(client, q1);
-        runQueueTest(client, q2);
-    }
-
-
-    public void testPooledPersistedQueues() throws Exception {
-        Destination q1 = Destination.queue("pooledPersistedQueue1", Optional.of("pooled-persisted"));
-        Destination q2 = Destination.queue("pooledPersistedQueue2", Optional.of("pooled-persisted"));
+    public void testShardedQueues() throws Exception {
+        Destination q1 = Destination.queue("persistedQueue1", "sharded-queue");
+        Destination q2 = Destination.queue("persistedQueue2", "sharded-queue");
 
         setAddresses(q1, q2);
 
@@ -86,60 +59,44 @@ public class QueueTest extends TestBase {
     }
 
     @Test
-    public void testRestApiForQueue() throws Exception {
+    public void testRestApi() throws Exception {
         List<String> queues = Arrays.asList("queue1", "queue2");
-        Destination q1 = Destination.queue(queues.get(0), Optional.of("pooled-inmemory"));
-        Destination q2 = Destination.queue(queues.get(1), Optional.of("pooled-inmemory"));
+        Destination q1 = Destination.queue(queues.get(0), "pooled-queue");
+        Destination q2 = Destination.queue(queues.get(1), "pooled-queue");
 
-        setAddresses(q1);
-        appendAddresses(q2);
-
-        //queue1, queue2
-        Future<List<String>> response = getAddresses(Optional.empty());
-        assertThat(response.get(1, TimeUnit.MINUTES), is(queues));
-        Logging.log.info("queues (" + queues.stream().collect(Collectors.joining(",")) + ") successfully created");
-
-        deleteAddresses(q1);
-
-        //queue1
-        response = getAddresses(Optional.empty());
-        assertThat(response.get(1, TimeUnit.MINUTES), is(queues.subList(1, 2)));
-        Logging.log.info("queue (" + q1.getAddress() + ") successfully deleted");
-
-        deleteAddresses(q2);
-
-        //empty
-        response = getAddresses(Optional.empty());
-        assertThat(response.get(1, TimeUnit.MINUTES), is(java.util.Collections.emptyList()));
-        Logging.log.info("queue (" + q2.getAddress() + ") successfully deleted");
+        runRestApiTest(queues, q1, q2);
     }
 
     @Test
     public void testCreateDeleteQueue() throws Exception {
         List<String> queues = IntStream.range(0, 16).mapToObj(i -> "queue-create-delete-" + i).collect(Collectors.toList());
-        Destination destExtra = Destination.queue("ext-queue", Optional.of("pooled-inmemory"));
+        Destination destExtra = Destination.queue("ext-queue", "pooled-queue");
 
         List<Destination> addresses = new ArrayList<>();
-        queues.forEach(queue -> addresses.add(Destination.queue(queue, Optional.of("pooled-inmemory"))));
+        queues.forEach(queue -> addresses.add(Destination.queue(queue, "pooled-queue")));
 
         AmqpClient client = amqpClientFactory.createQueueClient();
         for (Destination address : addresses) {
             setAddresses(address, destExtra);
+            Thread.sleep(20_000);
 
             //runQueueTest(client, address, 1); //TODO! commented due to issue #429
 
             deleteAddresses(address);
             Future<List<String>> response = getAddresses(Optional.empty());
-            assertThat(response.get(20, TimeUnit.SECONDS), is(Arrays.asList(destExtra.getAddress())));
+            assertThat("Extra destination was not created ",
+                    response.get(20, TimeUnit.SECONDS), is(Arrays.asList(destExtra.getAddress())));
             deleteAddresses(destExtra);
             response = getAddresses(Optional.empty());
-            assertThat(response.get(20, TimeUnit.SECONDS), is(java.util.Collections.emptyList()));
+            assertThat("No destinations are expected",
+                    response.get(20, TimeUnit.SECONDS), is(java.util.Collections.emptyList()));
+            Thread.sleep(20_000);
         }
     }
 
     @Test
     public void testMessagePriorities() throws Exception {
-        Destination dest = Destination.queue("messagePrioritiesQueue");
+        Destination dest = Destination.queue("messagePrioritiesQueue", getDefaultPlan(AddressType.QUEUE));
         setAddresses(dest);
 
         AmqpClient client = amqpClientFactory.createQueueClient();
@@ -158,24 +115,27 @@ public class QueueTest extends TestBase {
 
         Future<Integer> sent = client.sendMessages(dest.getAddress(),
                 listOfMessages.toArray(new Message[listOfMessages.size()]));
-        assertThat(sent.get(1, TimeUnit.MINUTES), is(msgsCount));
+        assertThat("Wrong count of messages sent", sent.get(1, TimeUnit.MINUTES), is(msgsCount));
 
         Future<List<Message>> received = client.recvMessages(dest.getAddress(), msgsCount);
-        assertThat(received.get(1, TimeUnit.MINUTES).size(), is(msgsCount));
+        assertThat("Wrong count of messages received", received.get(1, TimeUnit.MINUTES).size(), is(msgsCount));
 
         int sub = 1;
         for (Message m : received.get()) {
             for (Message mSub : received.get().subList(sub, received.get().size())) {
-                assertTrue(m.getPriority() >= mSub.getPriority());
+                assertTrue("Wrong order of messages", m.getPriority() >= mSub.getPriority());
             }
             sub++;
         }
     }
 
+    //@Test test disabled due to issue: #851
     public void testScaledown() throws Exception {
-        Destination dest = Destination.queue("scalequeue");
+        Destination dest = Destination.queue("scalequeue", "sharded-queue");
         setAddresses(dest);
         scale(dest, 4);
+
+        Thread.sleep(30000);
         AmqpClient client = amqpClientFactory.createQueueClient();
         List<Future<Integer>> sent = Arrays.asList(
                 client.sendMessages(dest.getAddress(), TestUtils.generateMessages("foo", 1000)),
@@ -183,19 +143,27 @@ public class QueueTest extends TestBase {
                 client.sendMessages(dest.getAddress(), TestUtils.generateMessages("baz", 1000)),
                 client.sendMessages(dest.getAddress(), TestUtils.generateMessages("quux", 1000)));
 
-        assertThat(sent.get(0).get(1, TimeUnit.MINUTES), is(1000));
-        assertThat(sent.get(1).get(1, TimeUnit.MINUTES), is(1000));
-        assertThat(sent.get(2).get(1, TimeUnit.MINUTES), is(1000));
-        assertThat(sent.get(3).get(1, TimeUnit.MINUTES), is(1000));
+        assertThat("Wrong count of messages sent: sender0",
+                sent.get(0).get(1, TimeUnit.MINUTES), is(1000));
+        assertThat("Wrong count of messages sent: sender1",
+                sent.get(1).get(1, TimeUnit.MINUTES), is(1000));
+        assertThat("Wrong count of messages sent: sender2",
+                sent.get(2).get(1, TimeUnit.MINUTES), is(1000));
+        assertThat("Wrong count of messages sent: sender3",
+                sent.get(3).get(1, TimeUnit.MINUTES), is(1000));
 
         Future<List<Message>> received = client.recvMessages(dest.getAddress(), 500);
-        assertThat(received.get(1, TimeUnit.MINUTES).size(), is(500));
+        assertThat("Wrong count of messages received",
+                received.get(1, TimeUnit.MINUTES).size(), is(500));
 
         scale(dest, 1);
 
+        Thread.sleep(30000);
+
         received = client.recvMessages(dest.getAddress(), 3500);
 
-        assertThat(received.get(1, TimeUnit.MINUTES).size(), is(3500));
+        assertThat("Wrong count of messages received",
+                received.get(1, TimeUnit.MINUTES).size(), is(3500));
     }
 
     public static void runQueueTest(AmqpClient client, Destination dest) throws InterruptedException, ExecutionException, TimeoutException, IOException {
@@ -207,14 +175,14 @@ public class QueueTest extends TestBase {
         Count<Message> predicate = new Count<>(msgs.size());
         Future<Integer> numSent = client.sendMessages(dest.getAddress(), msgs, predicate);
 
-        assertNotNull(numSent);
+        assertNotNull("Sending messages didn't start", numSent);
         int actual = 0;
         try {
             actual = numSent.get(1, TimeUnit.MINUTES);
         } catch (TimeoutException t) {
             fail("Sending messages timed out after sending " + predicate.actual());
         }
-        assertThat(actual, is(msgs.size()));
+        assertThat("Wrong count of messages sent", actual, is(msgs.size()));
 
         predicate = new Count<>(msgs.size());
         Future<List<Message>> received = client.recvMessages(dest.getAddress(), predicate);
@@ -225,7 +193,7 @@ public class QueueTest extends TestBase {
             fail("Receiving messages timed out after " + predicate.actual() + " msgs received");
         }
 
-        assertThat(actual, is(msgs.size()));
+        assertThat("Wrong count of messages received", actual, is(msgs.size()));
     }
 }
 
